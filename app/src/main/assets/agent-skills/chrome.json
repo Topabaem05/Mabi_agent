@@ -1,0 +1,47 @@
+{
+  "appName": "Chrome",
+  "packageNames": ["com.android.chrome"],
+  "procedures": [
+    {
+      "name": "address_or_search",
+      "goalPatterns": ["chrome", "browser", "url", "search", "web", "크롬"],
+      "riskPoints": ["Do not submit forms, post, pay, upload, or share without confirm_user."],
+      "steps": [
+        {
+          "intent": "Focus the Chrome address/search field.",
+          "expectedObservation": "The omnibox is editable or focused.",
+          "fallbackStrategy": "Try visible text field first, then resource id, then content description.",
+          "preferredSelectors": [
+            {
+              "resourceId": "com.android.chrome:id/search_box_text",
+              "clickable": true,
+              "packageName": "com.android.chrome"
+            },
+            {
+              "resourceId": "com.android.chrome:id/url_bar",
+              "editable": true,
+              "packageName": "com.android.chrome"
+            },
+            {
+              "contentDescription": "Search or type web address",
+              "clickable": true,
+              "packageName": "com.android.chrome"
+            }
+          ]
+        },
+        {
+          "intent": "Input the predefined query or URL.",
+          "expectedObservation": "The typed query or loaded page evidence appears.",
+          "fallbackStrategy": "Verify text input before pressing enter or submit_input.",
+          "preferredSelectors": [
+            {
+              "resourceId": "com.android.chrome:id/url_bar",
+              "editable": true,
+              "packageName": "com.android.chrome"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

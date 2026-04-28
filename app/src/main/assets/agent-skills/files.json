@@ -1,0 +1,29 @@
+{
+  "appName": "Files",
+  "packageNames": ["com.google.android.documentsui", "com.sec.android.app.myfiles"],
+  "procedures": [
+    {
+      "name": "read_only_file_browse",
+      "goalPatterns": ["files", "file", "download", "document", "파일"],
+      "riskPoints": ["Deleting, sharing, moving, uploading, or installing files requires confirm_user before commit."],
+      "steps": [
+        {
+          "intent": "Open the Files app and inspect the current root or recent files screen.",
+          "expectedObservation": "A Files toolbar, Recent title, folder list, or file list is visible.",
+          "fallbackStrategy": "If a permission dialog appears, stop at confirm_user before granting permission.",
+          "preferredSelectors": [
+            {
+              "text": "Recent",
+              "packageName": "com.google.android.documentsui"
+            },
+            {
+              "contentDescription": "Search",
+              "clickable": true,
+              "packageName": "com.google.android.documentsui"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

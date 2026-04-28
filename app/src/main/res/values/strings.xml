@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">phone_app_agent</string>
+    <string name="accessibility_service_label">Phone App Agent</string>
+    <string name="accessibility_service_description">Observe the current app, capture visible nodes, and stop before risky actions.</string>
+    <string name="agent_notification_title">Phone Agent</string>
+    <string name="agent_notification_channel">Agent Run</string>
+    <string name="agent_action_pause">Pause</string>
+    <string name="agent_action_resume">Resume</string>
+    <string name="agent_action_stop">Stop</string>
+    <string name="agent_action_return">Return to app</string>
+</resources>

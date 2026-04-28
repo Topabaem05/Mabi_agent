@@ -1,0 +1,55 @@
+{
+  "appName": "Settings",
+  "packageNames": [
+    "com.android.settings",
+    "com.android.settings.intelligence",
+    "com.google.android.settings.intelligence"
+  ],
+  "procedures": [
+    {
+      "name": "search_settings",
+      "goalPatterns": ["settings", "wifi", "wi-fi", "internet", "network", "search", "설정", "와이파이"],
+      "riskPoints": ["Changing network, permission, account, or security settings requires confirm_user before commit."],
+      "steps": [
+        {
+          "intent": "Open Settings search from the Settings home screen.",
+          "expectedObservation": "An editable search field is visible.",
+          "fallbackStrategy": "If the search icon is absent, inspect visible nodes for an editable field or scroll top once.",
+          "preferredSelectors": [
+            {
+              "contentDescription": "Search settings",
+              "clickable": true,
+              "packageName": "com.android.settings"
+            },
+            {
+              "resourceId": "com.android.settings:id/search_action_bar",
+              "clickable": true,
+              "packageName": "com.android.settings"
+            },
+            {
+              "resourceId": "com.google.android.settings.intelligence:id/open_search_view_edit_text",
+              "editable": true,
+              "packageName": "com.google.android.settings.intelligence"
+            }
+          ]
+        },
+        {
+          "intent": "Type the user's query into the visible Settings search field.",
+          "expectedObservation": "Search results related to the query are visible.",
+          "fallbackStrategy": "After input_text, re-observe before submitting; do not toggle a result.",
+          "preferredSelectors": [
+            {
+              "resourceId": "com.android.settings.intelligence:id/search_src_text",
+              "editable": true
+            },
+            {
+              "className": "android.widget.EditText",
+              "editable": true,
+              "nearText": "Search settings"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
