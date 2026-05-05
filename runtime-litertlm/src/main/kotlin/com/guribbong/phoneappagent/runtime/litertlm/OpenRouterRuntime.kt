@@ -53,6 +53,8 @@ private const val SETTINGS_PACKAGE = "com.android.settings"
 private const val SETTINGS_INTELLIGENCE_PACKAGE = "com.android.settings.intelligence"
 private const val SAMSUNG_SETTINGS_SEARCH_BUTTON_DESC = "설정 검색"
 private const val SETTINGS_INTELLIGENCE_SEARCH_TEXT_ID = "com.android.settings.intelligence:id/search_src_text"
+private const val SAMSUNG_SETTINGS_CONNECTIONS_LABEL = "연결"
+private const val SAMSUNG_SETTINGS_WIFI_LABEL = "Wi-Fi"
 private const val SAMSUNG_BLUETOOTH_RESULT_LABEL = "블루투스"
 private const val SAMSUNG_CONTACTS_PACKAGE = "com.samsung.android.app.contacts"
 private const val SAMSUNG_CONTACTS_SEARCH_BUTTON_ID = "com.samsung.android.app.contacts:id/menu_search"
@@ -95,7 +97,7 @@ class OpenRouterLocalAgentRuntime(
             val statFs = StatFs(appContext.filesDir.absolutePath)
             val totalMemoryMb = memoryInfo.totalMem / (1024L * 1024L)
             val availableStorageMb = statFs.availableBytes / (1024L * 1024L)
-            val abi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
+            val abi = Build.SUPPORTED_ABIS?.firstOrNull().orEmpty()
             val supported = config.apiKey.isNotBlank() && availableStorageMb >= OPENROUTER_MIN_STORAGE_MB
             DeviceCapabilityProfile(
                 supported = supported,
@@ -466,6 +468,7 @@ class OpenRouterLocalAgentRuntime(
         return when {
             isChromeSearchGoal(lowerGoal) -> normalizeChromeSearchPlan(input.goal, steps)
             isSamsungBluetoothSettingsGoal(lowerGoal, steps) -> normalizeSamsungBluetoothSettingsPlan(steps)
+            isSamsungWifiSettingsGoal(lowerGoal) -> normalizeSamsungWifiSettingsPlan(steps)
             isSamsungSettingsSearchGoal(lowerGoal, steps) -> normalizeSamsungSettingsSearchPlan(input.goal, steps)
             isSamsungClockAlarmGoal(lowerGoal, steps) -> normalizeSamsungClockAlarmPlan(steps)
             isSamsungContactsSearchGoal(lowerGoal, steps) -> normalizeSamsungContactsSearchPlan(input.goal, steps)
@@ -809,6 +812,63 @@ class OpenRouterLocalAgentRuntime(
                 ),
             )
         }
+    }
+
+    private fun normalizeSamsungWifiSettingsPlan(steps: List<ExecutionStep>): List<ExecutionStep> {
+        val launchStep =
+            steps.firstOrNull { (it.action as? AgentAction.LaunchApp)?.packageName == SETTINGS_PACKAGE }
+                ?: ExecutionStep(
+                    action = AgentAction.LaunchApp(SETTINGS_PACKAGE),
+                    expectedObservation = "Settings launches.",
+                )
+        val waitForAppStep =
+            steps.firstOrNull { (it.action as? AgentAction.WaitForApp)?.packageName == SETTINGS_PACKAGE }
+                ?: ExecutionStep(
+                    action = AgentAction.WaitForApp(SETTINGS_PACKAGE),
+                    expectedObservation = "Settings becomes foreground.",
+                )
+        val searchButtonSelector = NodeSelector(
+            contentDescription = SAMSUNG_SETTINGS_SEARCH_BUTTON_DESC,
+            packageName = SETTINGS_PACKAGE,
+        )
+        val searchFieldSelector = NodeSelector(
+            resourceId = SETTINGS_INTELLIGENCE_SEARCH_TEXT_ID,
+            packageName = SETTINGS_INTELLIGENCE_PACKAGE,
+        )
+        return listOf(
+            launchStep,
+            waitForAppStep,
+            ExecutionStep(
+                action = AgentAction.WaitForNode(searchButtonSelector),
+                expectedObservation = "Settings search button is visible.",
+            ),
+            ExecutionStep(
+                action = AgentAction.Tap(
+                    selector = searchButtonSelector,
+                    label = "Open Settings search",
+                ),
+                expectedObservation = "Settings search opens.",
+            ),
+            ExecutionStep(
+                action = AgentAction.WaitForNode(searchFieldSelector),
+                expectedObservation = "Settings search field is visible and focused.",
+            ),
+            ExecutionStep(
+                action = AgentAction.InputText(
+                    selector = searchFieldSelector,
+                    text = SAMSUNG_SETTINGS_WIFI_LABEL,
+                ),
+                expectedObservation = "Wi-Fi query appears in Settings search.",
+            ),
+            ExecutionStep(
+                action = AgentAction.SubmitInput(searchFieldSelector),
+                expectedObservation = "Settings search results update for Wi-Fi.",
+            ),
+            ExecutionStep(
+                action = AgentAction.Stop,
+                expectedObservation = "Wi-Fi/network search results are visible.",
+            ),
+        )
     }
 
     private fun normalizeSamsungClockAlarmPlan(steps: List<ExecutionStep>): List<ExecutionStep> {
@@ -1509,6 +1569,16 @@ class OpenRouterLocalAgentRuntime(
         ("bluetooth" in lowerGoal || "블루투스" in lowerGoal) &&
             ("settings" in lowerGoal || "설정" in lowerGoal)
 
+    private fun isSamsungWifiSettingsGoal(lowerGoal: String): Boolean =
+        ("settings" in lowerGoal || "설정" in lowerGoal) &&
+            (
+                "wi-fi" in lowerGoal ||
+                    "wifi" in lowerGoal ||
+                    "network" in lowerGoal ||
+                    "네트워크" in lowerGoal ||
+                    "와이파이" in lowerGoal
+            )
+
     private fun isSamsungClockAlarmGoal(
         lowerGoal: String,
         steps: List<ExecutionStep>,
@@ -1546,19 +1616,30 @@ class OpenRouterLocalAgentRuntime(
             .takeIf { it.isNotBlank() }
 
     private fun extractSendRecipient(goal: String): String? =
-        Regex("(?i)\\bto\\s+([^\"']+?)(?:\\s+and\\s+send|\\s*$)")
-            .find(goal)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-            ?.trim('"', '\'')
-            ?.takeIf { it.isNotBlank() }
+        sequenceOf(
+            Regex("(?i)\\bto\\s+(.+?)\\s+saying\\b"),
+            Regex("(?i)\\bto\\s+([^\"']+?)(?:\\s+and\\s+send|\\s*$)"),
+        ).mapNotNull { regex ->
+            regex.find(goal)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.trim()
+                ?.trim('"', '\'')
+                ?.takeIf { it.isNotBlank() }
+        }.firstOrNull()
 
     private fun extractSendMessage(goal: String): String? =
-        Regex("(?i)send\\s+(.+?)\\s+to\\s+").find(goal)?.groupValues?.getOrNull(1)
-            ?.trim()
-            ?.trim('"', '\'')
-            ?.takeIf { it.isNotBlank() }
+        sequenceOf(
+            Regex("(?i)\\bsaying\\s+(.+?)(?:,?\\s+but\\b|\\.\\s*$|$)"),
+            Regex("(?i)send\\s+(.+?)\\s+to\\s+"),
+        ).mapNotNull { regex ->
+            regex.find(goal)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.trim()
+                ?.trim('"', '\'')
+                ?.takeIf { it.isNotBlank() }
+        }.firstOrNull()
 
     private fun normalizeSettingsSearchResultText(query: String): String? {
         val normalized = query.trim().lowercase()

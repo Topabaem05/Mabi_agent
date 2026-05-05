@@ -22,6 +22,9 @@ private val SETTINGS_SEARCH_FIELD_RESOURCE_IDS = setOf(
     "com.android.settings.intelligence:id/search_src_text",
     "com.google.android.settings.intelligence:id/open_search_view_edit_text",
 )
+private val SETTINGS_SEARCH_BUTTON_RESOURCE_IDS = setOf(
+    "com.android.settings:id/search_action_bar",
+)
 private const val SAMSUNG_MESSAGES_PACKAGE = "com.samsung.android.messaging"
 private const val SAMSUNG_MESSAGES_FAB_ID = "com.samsung.android.messaging:id/fab"
 private const val SAMSUNG_MESSAGES_RECIPIENT_SEARCH_ID = "com.samsung.android.messaging:id/search_src_text"
@@ -368,9 +371,11 @@ class AndroidAccessibilityDriver(
         if (packageResolver.canonical(packageName) != SETTINGS_PACKAGE) return false
         val expectedText = selector.text?.trim()?.lowercase()
         val expectedContentDescription = selector.contentDescription?.trim()?.lowercase()
+        val expectedResourceId = selector.resourceId?.trim()?.lowercase()
         val expectsSearch =
             expectedText in SETTINGS_SEARCH_SELECTOR_TERMS ||
-                expectedContentDescription in SETTINGS_SEARCH_SELECTOR_TERMS
+                expectedContentDescription in SETTINGS_SEARCH_SELECTOR_TERMS ||
+                expectedResourceId in SETTINGS_SEARCH_BUTTON_RESOURCE_IDS
         if (!expectsSearch) return false
         val actualText = text?.trim()?.lowercase()
         val actualDescription = contentDescription?.trim()?.lowercase()

@@ -10,4 +10,6 @@ dependencies {
     implementation(project(":core-dsl"))
     implementation(project(":core-policy"))
     implementation(libs.kotlinx.coroutines.core)
+
+    testImplementation("junit:junit:4.13.2")
 }

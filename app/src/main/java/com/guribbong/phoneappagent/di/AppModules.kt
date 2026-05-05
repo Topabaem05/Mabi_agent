@@ -36,7 +36,7 @@ private const val AGENT_SETTINGS_FILE = "agent_settings.preferences_pb"
 
 data class AgentSettings(
     val modelName: String = BuildConfig.OPENROUTER_MODEL,
-    val backend: String = "OpenRouter / remote warm-up pending",
+    val backend: String = "OpenRouter / ${BuildConfig.OPENROUTER_MODEL}",
     val overlayEnabled: Boolean = true,
 )
 
@@ -56,7 +56,7 @@ private class DefaultSettingsRepository(
         dataStore.data.map { prefs ->
             AgentSettings(
                 modelName = prefs[modelKey] ?: BuildConfig.OPENROUTER_MODEL,
-                backend = prefs[backendKey] ?: "OpenRouter / remote warm-up pending",
+                backend = prefs[backendKey] ?: "OpenRouter / ${BuildConfig.OPENROUTER_MODEL}",
                 overlayEnabled = prefs[overlayKey] ?: true,
             )
         }

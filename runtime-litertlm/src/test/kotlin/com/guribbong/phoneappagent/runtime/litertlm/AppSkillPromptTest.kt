@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import com.guribbong.phoneappagent.core.policy.PolicyGate
 import com.guribbong.phoneappagent.core.runner.PlannerInput
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -30,22 +31,8 @@ class AppSkillPromptTest {
         assertTrue(prompt.contains("appSkillGuidance"))
         assertTrue(prompt.contains("search_settings"))
         assertTrue(prompt.contains("visibleNodes"))
-    }
-
-    @Test
-    fun litertPromptIncludesCompactSkillField() {
-        val runtime = LiteRtLmLocalAgentRuntime(
-            context = object : ContextWrapper(null) {
-                override fun getApplicationContext(): Context = this
-            },
-            policyGate = PolicyGate(),
-        )
-        val method = LiteRtLmLocalAgentRuntime::class.java.getDeclaredMethod("buildPrompt", PlannerInput::class.java)
-        method.isAccessible = true
-        val prompt = method.invoke(runtime, settingsPlannerInput()) as String
-
-        assertTrue(prompt.contains("\"skill\""))
-        assertTrue(prompt.contains("search_settings"))
+        assertFalse(prompt.contains("LiteRT"))
+        assertFalse(prompt.contains("OpenCL"))
     }
 
     private fun settingsPlannerInput(): PlannerInput =

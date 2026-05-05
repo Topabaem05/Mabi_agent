@@ -8,5 +8,6 @@ kotlin {
 
 dependencies {
     implementation(project(":core-dsl"))
-}
 
+    testImplementation("junit:junit:4.13.2")
+}

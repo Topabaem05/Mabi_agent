@@ -4,10 +4,12 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.core.view.WindowCompat
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +35,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        configureSystemBars()
         seedPrompt = intent.getStringExtra(EXTRA_SEED_PROMPT)
         seedAutoQueue = intent.getBooleanExtra(EXTRA_AUTO_QUEUE, false)
         seedNonce += 1
@@ -68,6 +71,16 @@ class MainActivity : ComponentActivity() {
         } else {
             @Suppress("DEPRECATION")
             registerReceiver(plannerSeedReceiver, filter)
+        }
+    }
+
+    private fun configureSystemBars() {
+        val figmaBackground = Color.rgb(242, 239, 233)
+        window.statusBarColor = figmaBackground
+        window.navigationBarColor = figmaBackground
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = true
+            isAppearanceLightNavigationBars = true
         }
     }
 

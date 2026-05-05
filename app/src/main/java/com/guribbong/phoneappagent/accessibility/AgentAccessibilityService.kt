@@ -38,6 +38,9 @@ private val SETTINGS_SEARCH_FIELD_RESOURCE_IDS = setOf(
     "com.android.settings.intelligence:id/search_src_text",
     "com.google.android.settings.intelligence:id/open_search_view_edit_text",
 )
+private val SETTINGS_SEARCH_BUTTON_RESOURCE_IDS = setOf(
+    "com.android.settings:id/search_action_bar",
+)
 private const val CHROME_PACKAGE = "com.android.chrome"
 private const val CHROME_SEARCH_BOX_RESOURCE_ID = "com.android.chrome:id/search_box_text"
 private const val CHROME_URL_BAR_RESOURCE_ID = "com.android.chrome:id/url_bar"
@@ -523,9 +526,11 @@ class AgentAccessibilityService : AccessibilityService(), AccessibilityActionPer
         if (packageName !in SETTINGS_PACKAGE_ALIASES) return false
         val expectedText = selector.text?.trim()?.lowercase()
         val expectedDescription = selector.contentDescription?.trim()?.lowercase()
+        val expectedResourceId = selector.resourceId?.trim()?.lowercase()
         val expectsSearch =
             expectedText in SETTINGS_SEARCH_SELECTOR_TERMS ||
-                expectedDescription in SETTINGS_SEARCH_SELECTOR_TERMS
+                expectedDescription in SETTINGS_SEARCH_SELECTOR_TERMS ||
+                expectedResourceId in SETTINGS_SEARCH_BUTTON_RESOURCE_IDS
         if (!expectsSearch) return false
         val actualText = node.text?.toString()?.trim()?.lowercase()
         val actualDescription = node.contentDescription?.toString()?.trim()?.lowercase()

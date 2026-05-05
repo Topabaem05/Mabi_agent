@@ -246,6 +246,56 @@ class OpenRouterRuntimeMessagesPlanTest {
     }
 
     @Test
+    fun `wifi settings goal normalizes to samsung search flow instead of brittle search result ids`() {
+        val validateMethod =
+            OpenRouterLocalAgentRuntime::class.java.getDeclaredMethod(
+                "validatePlan",
+                PlannerInput::class.java,
+                String::class.java,
+            ).apply {
+                isAccessible = true
+            }
+
+        val plan = validateMethod.invoke(
+            runtime,
+            PlannerInput(
+                goal = "Open Settings and go to the Wi-Fi or network settings page. Read only; do not change any setting.",
+                foregroundPackage = "com.android.settings",
+                lastExternalForegroundPackage = "com.android.settings",
+                serializedNodeTree = "text=연결 | desc= | id=android:id/title | class=android.widget.TextView | package=com.android.settings | editable=false | clickable=false\n" +
+                    "text=Wi-Fi  •  블루투스  •  비행기 탑승 모드 | desc= | id=android:id/summary | class=android.widget.TextView | package=com.android.settings | editable=false | clickable=false",
+                recentActionHistory = listOf(
+                    AgentAction.LaunchApp("com.android.settings").historyKey(),
+                    AgentAction.WaitForApp("com.android.settings").historyKey(),
+                ),
+                riskHints = emptyList(),
+                candidateApps = listOf(AppCandidate(label = "Settings", packageName = "com.android.settings")),
+                planningMode = com.guribbong.phoneappagent.core.runner.PlanningMode.STEPWISE_REPLAN,
+                stepBudget = 4,
+            ),
+            """
+            {
+              "summary": "Search for Wi-Fi.",
+              "riskLevel": "low",
+              "needsConfirmation": false,
+              "targetPackageCandidates": ["com.android.settings"],
+              "steps": [
+                {"type":"wait_for_node","selector":{"resourceId":"com.android.settings:id/search_result_container"}},
+                {"type":"tap","selector":{"text":"Wi-Fi","resourceId":"com.android.settings:id/search_result_item_title"}}
+              ]
+            }
+            """.trimIndent(),
+        ) as com.guribbong.phoneappagent.core.runner.PlanDraft
+
+        val actions = plan.steps.map { it.action }
+        assertTrue(actions.toString(), actions[0] is AgentAction.WaitForNode)
+        assertEquals("설정 검색", (actions[0] as AgentAction.WaitForNode).selector.contentDescription)
+        assertEquals("설정 검색", (actions[1] as AgentAction.Tap).selector.contentDescription)
+        assertEquals("com.android.settings.intelligence:id/search_src_text", (actions[2] as AgentAction.WaitForNode).selector.resourceId)
+        assertEquals("Wi-Fi", (actions[3] as AgentAction.InputText).text)
+    }
+
+    @Test
     fun `string stop step is accepted during validation`() {
         val validateMethod =
             OpenRouterLocalAgentRuntime::class.java.getDeclaredMethod(
@@ -285,6 +335,52 @@ class OpenRouterRuntimeMessagesPlanTest {
 
         assertEquals(1, plan.steps.size)
         assertTrue(plan.steps.first().action is AgentAction.Stop)
+    }
+
+    @Test
+    fun `prepare message without send normalizes to confirm gated samsung messages flow`() {
+        val validateMethod =
+            OpenRouterLocalAgentRuntime::class.java.getDeclaredMethod(
+                "validatePlan",
+                PlannerInput::class.java,
+                String::class.java,
+            ).apply {
+                isAccessible = true
+            }
+
+        val plan = validateMethod.invoke(
+            runtime,
+            PlannerInput(
+                goal = "Open Messages and prepare a text message to Test Contact saying hello, but do not send it. Stop before any send action and ask for confirmation.",
+                foregroundPackage = "com.guribbong.phoneappagent",
+                lastExternalForegroundPackage = null,
+                serializedNodeTree = "",
+                recentActionHistory = emptyList(),
+                riskHints = emptyList(),
+                candidateApps = listOf(AppCandidate(label = "Messages", packageName = "com.samsung.android.messaging")),
+                planningMode = com.guribbong.phoneappagent.core.runner.PlanningMode.INITIAL,
+                stepBudget = 4,
+            ),
+            """
+            {
+              "summary": "Launch Messages first.",
+              "riskLevel": "low",
+              "needsConfirmation": false,
+              "targetPackageCandidates": ["com.samsung.android.messaging"],
+              "steps": [
+                {"type":"launch_app","packageName":"com.samsung.android.messaging"},
+                {"type":"wait_for_app","packageName":"com.samsung.android.messaging"}
+              ]
+            }
+            """.trimIndent(),
+        ) as com.guribbong.phoneappagent.core.runner.PlanDraft
+
+        val actions = plan.steps.map { it.action }
+        assertEquals(4, actions.size)
+        assertEquals(AgentAction.LaunchApp("com.samsung.android.messaging"), actions[0])
+        assertEquals("com.samsung.android.messaging", (actions[1] as AgentAction.WaitForApp).packageName)
+        assertEquals("com.samsung.android.messaging:id/fab", (actions[2] as AgentAction.WaitForNode).selector.resourceId)
+        assertEquals("com.samsung.android.messaging:id/fab", (actions[3] as AgentAction.Tap).selector.resourceId)
     }
 
     private fun normalizePlan(steps: List<ExecutionStep>): List<ExecutionStep> {
