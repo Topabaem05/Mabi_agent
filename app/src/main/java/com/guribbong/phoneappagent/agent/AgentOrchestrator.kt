@@ -11,7 +11,9 @@ import com.guribbong.phoneappagent.core.dsl.historyKey
 import com.guribbong.phoneappagent.core.policy.PolicyGate
 import com.guribbong.phoneappagent.core.runner.ExecutionStep
 import com.guribbong.phoneappagent.core.runner.LocalAgentRuntime
+import com.guribbong.phoneappagent.core.runner.LoopDetector
 import com.guribbong.phoneappagent.core.runner.PlanDraft
+import com.guribbong.phoneappagent.core.runner.PlanValidator
 import com.guribbong.phoneappagent.core.runner.PlanningMode
 import com.guribbong.phoneappagent.core.runner.PlannerInput
 import com.guribbong.phoneappagent.data.history.SessionRepository
@@ -85,6 +87,8 @@ class AgentOrchestrator(
     private var activePlan: PlanDraft? = null
     private var activeSessionId: Long? = null
     private val activeActionHistory = ArrayDeque<String>()
+    private val planValidator = PlanValidator()
+    private val loopDetector = LoopDetector()
     private var pauseRequested = false
     private var stopRequested = false
 
@@ -108,6 +112,7 @@ class AgentOrchestrator(
         stopRequested = false
         pauseRequested = false
         activeActionHistory.clear()
+        loopDetector.reset()
         activeJob?.cancel()
         activeJob = launchActiveJob { runGoal(normalizedGoal) }
     }
@@ -264,6 +269,11 @@ class AgentOrchestrator(
                     return
                 }
                 val plan = runtime.plan(plannerInput)
+                validatePlanOrFail(
+                    sessionId = sessionId,
+                    goal = goal,
+                    plan = plan,
+                ) ?: return
                 activePlan = plan
                 appendPlanTrace(
                     sessionId = sessionId,
@@ -357,6 +367,11 @@ class AgentOrchestrator(
                         priorPlan = currentPlan,
                     )
                     val nextPlan = runtime.plan(plannerInput)
+                    validatePlanOrFail(
+                        sessionId = sessionId,
+                        goal = goal,
+                        plan = nextPlan,
+                    ) ?: return
                     currentPlan = nextPlan
                     currentStartIndex = 0
                     replanPasses += 1
@@ -476,6 +491,19 @@ class AgentOrchestrator(
             }
 
             val observedPackage = accessibilityRepository.snapshot.value.foregroundPackage
+            val loopResult = loopDetector.record(
+                packageName = observedPackage,
+                screenSummary = screenSummary(accessibilityRepository.snapshot.value),
+                action = step.action,
+            )
+            if (loopResult.triggered) {
+                failSession(
+                    sessionId = sessionId,
+                    goal = goal,
+                    reason = "LoopDetected: repeated ${loopResult.actionHistoryKey} on ${loopResult.packageName} (${loopResult.screenSummary}) ${loopResult.repeatCount} times.",
+                )
+                return PlanLoopResult.FAILED
+            }
             AccessibilityOverlayBridge.show(
                 statusLabel = "Agent active",
                 packageName = observedPackage,
@@ -519,6 +547,22 @@ class AgentOrchestrator(
         }
 
         return PlanLoopResult.NEEDS_REPLAN
+    }
+
+    private suspend fun validatePlanOrFail(
+        sessionId: Long,
+        goal: String,
+        plan: PlanDraft,
+    ): PlanDraft? {
+        val result = planValidator.validate(plan)
+        if (result.isValid) return plan
+
+        failSession(
+            sessionId = sessionId,
+            goal = goal,
+            reason = "Plan validation failed: ${result.errors.joinToString("; ")}",
+        )
+        return null
     }
 
     private suspend fun executeWithRecovery(step: ExecutionStep) =
@@ -765,6 +809,12 @@ class AgentOrchestrator(
                 append(" | editable=").append(node.editable)
                 append(" | clickable=").append(node.clickable)
             }
+        }
+
+    private fun screenSummary(snapshot: com.guribbong.phoneappagent.accessibility.AccessibilitySnapshot): String =
+        buildString {
+            append(snapshot.topNodeLabel?.takeIf { it.isNotBlank() } ?: "unknown")
+            append("|nodes=").append(snapshot.nodeCount)
         }
 
     private suspend fun awaitAccessibilityReady(timeoutMs: Long = 25_000L): com.guribbong.phoneappagent.accessibility.AccessibilitySnapshot {

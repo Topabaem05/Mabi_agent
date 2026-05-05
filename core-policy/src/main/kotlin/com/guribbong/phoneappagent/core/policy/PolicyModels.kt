@@ -80,6 +80,11 @@ class PolicyGate {
             "permission",
             "install",
             "logout",
+            "삭제",
+            "공유",
+            "설치",
+            "권한 허용",
+            "업로드",
         )
         val criticalWords = listOf(
             "send",
@@ -88,6 +93,9 @@ class PolicyGate {
             "buy",
             "transfer",
             "wire money",
+            "전송",
+            "송금",
+            "결제",
         )
     }
 }

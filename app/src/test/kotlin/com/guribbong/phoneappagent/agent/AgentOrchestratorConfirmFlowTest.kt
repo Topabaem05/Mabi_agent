@@ -500,6 +500,51 @@ class AgentOrchestratorConfirmFlowTest {
         assertTrue(input.appSkillGuidance.any { it.contains("learned=success: Compose button selector worked") })
     }
 
+    @Test
+    fun invalidPlannerPlanFailsBeforeDriverAction() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val sessionRepository = FakeSessionRepository()
+        val accessibilityRepository = FakeAccessibilityStatusRepository()
+        val recordedActions = mutableListOf<AgentAction>()
+        val runtime = FakeRuntime(
+            PlanDraft(
+                summary = "Malformed plan",
+                steps = listOf(
+                    ExecutionStep(
+                        action = AgentAction.Tap(NodeSelector()),
+                        expectedObservation = "This selector is intentionally invalid.",
+                    ),
+                ),
+                riskLevel = com.guribbong.phoneappagent.core.policy.RiskLevel.LOW,
+                needsConfirmation = false,
+                targetPackageCandidates = listOf("com.samsung.android.messaging"),
+                rawModelOutput = "{}",
+                rawPlanJson = """{"steps":[{"action":"tap"}]}""",
+            ),
+        )
+        val orchestrator = AgentOrchestrator(
+            context = context,
+            sessionRepository = sessionRepository,
+            accessibilityRepository = accessibilityRepository,
+            runtime = runtime,
+            planExecutor = PlanExecutor(RecordingAccessibilityDriver(recordedActions)),
+            policyGate = PolicyGate(),
+            appCatalog = InstalledAppCatalog(context),
+            packageResolver = CanonicalPackageResolver(),
+            powerController = AgentPowerController(context),
+            skillResolver = FakeSkillResolver(),
+        )
+
+        orchestrator.startGoal("Tap an invalid target")
+
+        val terminalState = waitForTerminalState(orchestrator)
+
+        assertEquals(AgentRunPhase.FAILED, terminalState.phase)
+        assertTrue(terminalState.detail.contains("Plan validation failed"))
+        assertEquals(emptyList<AgentAction>(), recordedActions)
+        assertEquals("failed", sessionRepository.latestStatus)
+    }
+
     private suspend fun waitForPhase(
         orchestrator: AgentOrchestrator,
         expected: AgentRunPhase,

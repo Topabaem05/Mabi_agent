@@ -26,8 +26,6 @@ dependencies {
     implementation(project(":core-runner"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.gson)
-    implementation(libs.litertlm.android)
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
