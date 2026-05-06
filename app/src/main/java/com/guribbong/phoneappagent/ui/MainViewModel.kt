@@ -13,6 +13,9 @@ import com.guribbong.phoneappagent.core.dsl.AgentAction
 import com.guribbong.phoneappagent.core.runner.ExecutionStep
 import com.guribbong.phoneappagent.core.runner.LocalAgentRuntime
 import com.guribbong.phoneappagent.data.history.ChatSessionSummary
+import com.guribbong.phoneappagent.data.history.ChatTranscript
+import com.guribbong.phoneappagent.data.history.ChatTranscriptMessage
+import com.guribbong.phoneappagent.data.history.ChatTranscriptRole
 import com.guribbong.phoneappagent.data.history.SessionRepository
 import com.guribbong.phoneappagent.di.SettingsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,16 +42,26 @@ data class MainUiState(
     val topNodeLabel: String? = null,
     val nodeCount: Int = 0,
     val lastAccessibilityEvent: String = "idle",
+    val currentGoal: String = "",
     val planSummary: String = "Waiting for first goal",
     val planSteps: List<ExecutionStep> = emptyList(),
     val currentStepIndex: Int = -1,
     val phaseLabel: String = "Idle",
     val needsConfirmation: Boolean = false,
+    val showRiskProcessPopup: Boolean = false,
     val policyReason: String = "Planner is waiting for a goal.",
+    val riskOptionUiModel: RiskOptionUiModel = RiskOptionUiBuilder.build(
+        goal = "",
+        planSummary = "Waiting for first goal",
+        planSteps = emptyList(),
+        currentStepIndex = -1,
+        reason = "Planner is waiting for a goal.",
+    ),
     val canPause: Boolean = false,
     val canResume: Boolean = false,
     val canStop: Boolean = false,
     val canConfirm: Boolean = false,
+    val selectedTranscript: ChatTranscript? = null,
 )
 
 class MainViewModel(
@@ -61,6 +74,7 @@ class MainViewModel(
     private val serviceController: AgentServiceController,
 ) : ViewModel() {
     private val composer = MutableStateFlow("")
+    private val selectedTranscript = MutableStateFlow<ChatTranscript?>(null)
     private val bootstrapMutex = Mutex()
     private var bootstrapped = false
 
@@ -90,7 +104,8 @@ class MainViewModel(
                 )
             },
             runtime.state,
-        ) { bundle, runtimeState ->
+            selectedTranscript,
+        ) { bundle, runtimeState, transcript ->
             MainUiState(
                 status = resolveStatus(bundle.accessibility, bundle.orchestratorState.phase),
                 sessions = bundle.sessions,
@@ -105,12 +120,21 @@ class MainViewModel(
                 topNodeLabel = bundle.accessibility.topNodeLabel,
                 nodeCount = bundle.accessibility.nodeCount,
                 lastAccessibilityEvent = bundle.accessibility.lastEvent,
+                currentGoal = bundle.orchestratorState.currentGoal,
                 planSummary = bundle.orchestratorState.currentPlan?.summary ?: "Queued goals will be planned on device.",
                 planSteps = bundle.orchestratorState.currentPlan?.steps ?: defaultSteps(bundle.accessibility),
                 currentStepIndex = bundle.orchestratorState.currentStepIndex,
                 phaseLabel = bundle.orchestratorState.phase.name.lowercase().replaceFirstChar(Char::titlecase),
                 needsConfirmation = bundle.orchestratorState.phase == AgentRunPhase.WAITING_FOR_CONFIRM,
+                showRiskProcessPopup = shouldShowRiskProcessPopup(bundle.orchestratorState),
                 policyReason = bundle.orchestratorState.detail,
+                riskOptionUiModel = RiskOptionUiBuilder.build(
+                    goal = bundle.orchestratorState.currentGoal,
+                    planSummary = bundle.orchestratorState.currentPlan?.summary ?: "Queued goals will be planned on device.",
+                    planSteps = bundle.orchestratorState.currentPlan?.steps ?: emptyList(),
+                    currentStepIndex = bundle.orchestratorState.currentStepIndex,
+                    reason = bundle.orchestratorState.detail,
+                ),
                 canPause = bundle.orchestratorState.phase in setOf(
                     AgentRunPhase.PREPARING,
                     AgentRunPhase.PLANNING,
@@ -124,6 +148,7 @@ class MainViewModel(
                     AgentRunPhase.FAILED,
                 ),
                 canConfirm = bundle.orchestratorState.phase == AgentRunPhase.WAITING_FOR_CONFIRM,
+                selectedTranscript = transcript,
             )
         }.stateIn(
             scope = viewModelScope,
@@ -202,6 +227,48 @@ class MainViewModel(
         serviceController.confirm()
     }
 
+    fun openSession(sessionId: Long) {
+        viewModelScope.launch {
+            selectedTranscript.value = runCatching {
+                sessionRepository.transcriptForSession(sessionId)
+            }.getOrElse { error ->
+                ChatTranscript(
+                    sessionId = sessionId,
+                    title = "History",
+                    appName = "phone_app_agent",
+                    status = "unavailable",
+                    updatedLabel = "",
+                    messages = listOf(
+                        ChatTranscriptMessage(
+                            role = ChatTranscriptRole.STATUS,
+                            title = "Could not load history",
+                            body = error.message ?: "The selected session transcript could not be loaded.",
+                        ),
+                    ),
+                )
+            }
+        }
+    }
+
+    fun closeSession() {
+        selectedTranscript.value = null
+    }
+
+    fun runRiskFollowUp(prompt: String) {
+        val normalizedPrompt = normalizeIncomingPrompt(prompt)
+        if (normalizedPrompt.isEmpty()) return
+        composer.value = ""
+        serviceController.startGoal(normalizedPrompt)
+    }
+
+    fun runRiskRefinement(refinement: String) {
+        val trimmed = refinement.trim()
+        if (trimmed.isEmpty()) return
+        val baseGoal = uiState.value.currentGoal.ifBlank { "현재 작업" }
+        composer.value = ""
+        serviceController.startGoal("$baseGoal\n추가 조건: $trimmed")
+    }
+
     private fun resolveStatus(
         accessibility: com.guribbong.phoneappagent.accessibility.AccessibilitySnapshot,
         phase: AgentRunPhase,
@@ -212,6 +279,33 @@ class MainViewModel(
             phase == AgentRunPhase.IDLE -> "Idle"
             else -> phase.name.lowercase().replaceFirstChar(Char::titlecase)
         }
+
+    private fun shouldShowRiskProcessPopup(state: com.guribbong.phoneappagent.agent.AgentOrchestratorState): Boolean =
+        state.phase == AgentRunPhase.WAITING_FOR_CONFIRM ||
+            (
+                state.phase == AgentRunPhase.FAILED &&
+                    listOf(
+                        "install",
+                        "download",
+                        "permission",
+                        "grant",
+                        "pay",
+                        "payment",
+                        "order",
+                        "checkout",
+                        "send",
+                        "share",
+                        "post",
+                        "설치",
+                        "다운로드",
+                        "권한",
+                        "허용",
+                        "결제",
+                        "주문",
+                        "전송",
+                        "공유",
+                    ).any { token -> token in state.currentGoal.lowercase() }
+                )
 
     private fun resolveAccessibilityHealth(health: AccessibilityServiceHealth): String =
         when (health) {

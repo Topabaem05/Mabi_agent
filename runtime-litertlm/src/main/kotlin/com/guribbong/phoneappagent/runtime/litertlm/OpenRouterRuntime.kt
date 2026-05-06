@@ -70,6 +70,52 @@ private const val SAMSUNG_MESSAGES_RECIPIENT_SEARCH_ID = "com.samsung.android.me
 private const val SAMSUNG_MESSAGES_CHAT_WITH_BUTTON_ID = "com.samsung.android.messaging:id/chat_with_button"
 private const val SAMSUNG_MESSAGES_MESSAGE_EDITOR_ID = "com.samsung.android.messaging:id/message_edit_text"
 private const val SAMSUNG_MESSAGES_SEND_BUTTON_ID = "com.samsung.android.messaging:id/send_button"
+private const val SAMSUNG_CAMERA_PACKAGE = "com.sec.android.app.camera"
+private const val SAMSUNG_CAMERA_SHUTTER_ID = "com.sec.android.app.camera:id/normal_center_button"
+private const val SAMSUNG_CAMERA_SHUTTER_DESC = "사진 촬영"
+private const val SAMSUNG_MYFILES_PACKAGE = "com.sec.android.app.myfiles"
+private const val PLAY_STORE_PACKAGE = "com.android.vending"
+private const val PLAY_STORE_SEARCH_TAB_KO = "검색"
+private const val PLAY_STORE_SEARCH_TAB_EN = "Search"
+private const val PLAY_STORE_SEARCH_DESC_KO = "Google Play 검색"
+private const val PLAY_STORE_SEARCH_PLACEHOLDER_KO = "앱 및 게임 검색"
+private const val PLAY_STORE_INSTALL_TEXT_KO = "설치"
+private const val PLAY_STORE_INSTALL_TEXT_EN = "Install"
+private const val PLAY_STORE_INSTALL_CONFIRM_REASON = "User confirmation required before installing an app from Google Play."
+private val PLAY_STORE_SEARCH_QUERY_ALIASES = mapOf(
+    "claude" to "Claude by Anthropic",
+)
+private val PLAY_STORE_DIRECT_PACKAGE_ALIASES = mapOf(
+    "claude" to "com.anthropic.claude",
+    "claude by anthropic" to "com.anthropic.claude",
+)
+private const val KORAIL_TALK_PACKAGE = "com.korail.talk"
+private const val KORAIL_DEPARTURE_STATION_ID = "com.korail.talk:id/v_departure_station"
+private const val KORAIL_ARRIVAL_STATION_ID = "com.korail.talk:id/v_arrival_station"
+private const val KORAIL_DEPARTURE_TEXT_ID = "com.korail.talk:id/tv_departure_station"
+private const val KORAIL_ARRIVAL_TEXT_ID = "com.korail.talk:id/tv_arrival_station"
+private const val KORAIL_STATION_NAME_ID = "com.korail.talk:id/stationNameTxt"
+private const val KORAIL_STATION_SEARCH_ID = "com.korail.talk:id/stationNameEdit"
+private const val KORAIL_TRAIN_SEARCH_BUTTON_ID = "com.korail.talk:id/btn_right"
+private const val KORAIL_RESULTS_TITLE_ID = "com.korail.talk:id/titleTxt"
+private const val KORAIL_STANDARD_RESERVE_BUTTON_ID = "com.korail.talk:id/standardReserveButton"
+private const val KORAIL_STANDARD_AVAILABLE_FARE_TEXT = "43,500원"
+private const val KORAIL_BOOKING_BUTTON_ID = "com.korail.talk:id/bookingBtn"
+private const val KORAIL_BOOKING_CONFIRM_REASON = "User confirmation required before entering KorailTalk booking."
+private val SUPPORTED_ACTION_TYPES = setOf(
+    "launch_app",
+    "wait_for_app",
+    "wait_for_node",
+    "tap",
+    "input_text",
+    "submit_input",
+    "clear_text",
+    "scroll",
+    "press_global",
+    "assert_visible",
+    "confirm_user",
+    "stop",
+)
 
 data class OpenRouterRuntimeConfig(
     val apiKey: String,
@@ -382,6 +428,8 @@ class OpenRouterLocalAgentRuntime(
                 val value = parts[1].trim()
                 if (value.isBlank()) return@mapNotNull null
                 when (key) {
+                    "ref" -> "ref=${value.take(8)}"
+                    "role" -> "r=${value.take(16)}"
                     "text" -> "t=${value.take(32)}"
                     "desc" -> "d=${value.take(32)}"
                     "id" -> "id=${value.substringAfterLast('/').take(28)}"
@@ -389,6 +437,8 @@ class OpenRouterLocalAgentRuntime(
                     "package" -> "p=${value.take(48)}"
                     "editable" -> value.takeIf { it == "true" }?.let { "e=true" }
                     "clickable" -> value.takeIf { it == "true" }?.let { "k=true" }
+                    "idx" -> "idx=${value.take(32)}"
+                    "bounds" -> "b=${value.take(32)}"
                     else -> null
                 }
             }.joinToString(separator = "|")
@@ -406,7 +456,7 @@ class OpenRouterLocalAgentRuntime(
                     is JSONObject ->
                         add(
                             ExecutionStep(
-                                action = parseAction(rawStep),
+                                action = parseAction(rawStep, input),
                                 expectedObservation = rawStep.optString(
                                     "expectedObservation",
                                     "Observe the requested UI transition.",
@@ -433,8 +483,10 @@ class OpenRouterLocalAgentRuntime(
         val runtimeRisk = root.optString("riskLevel", RiskLevel.LOW.name)
             .let { value -> runCatching { RiskLevel.valueOf(value.uppercase()) }.getOrDefault(RiskLevel.LOW) }
         val policyDecision = policyGate.evaluate(input.goal, steps.map { it.action }, runtimeRisk)
+        val deferPolicyConfirmation = shouldDeferPolicyConfirmation(input, steps)
+        val effectiveNeedsConfirmation = policyDecision.needsConfirmation && !deferPolicyConfirmation
         val gatedSteps =
-            if (policyDecision.needsConfirmation && steps.none { it.action is AgentAction.ConfirmUser }) {
+            if (effectiveNeedsConfirmation && steps.none { it.action is AgentAction.ConfirmUser }) {
                 steps + ExecutionStep(
                     action = AgentAction.ConfirmUser(policyDecision.reason),
                     expectedObservation = "Execution pauses until the user confirms.",
@@ -442,12 +494,15 @@ class OpenRouterLocalAgentRuntime(
             } else {
                 steps
             }
-        val finalSteps = adaptStepsToCurrentProgress(input, gatedSteps)
+        val finalSteps = enforceCurrentScreenRiskGate(
+            input = input,
+            steps = adaptStepsToCurrentProgress(input, gatedSteps),
+        )
         return PlanDraft(
             summary = root.opt("summary")?.toString()?.takeIf { it.isNotBlank() } ?: "Remote plan ready",
             steps = finalSteps,
             riskLevel = runtimeRisk,
-            needsConfirmation = policyDecision.needsConfirmation || root.optBoolean("needsConfirmation", false),
+            needsConfirmation = effectiveNeedsConfirmation || root.optBoolean("needsConfirmation", false),
             targetPackageCandidates = root.optJSONArray("targetPackageCandidates")
                 ?.let(::jsonArrayToStrings)
                 .orEmpty(),
@@ -455,9 +510,57 @@ class OpenRouterLocalAgentRuntime(
             rawPlanJson = buildNormalizedPlanJson(
                 root = root,
                 steps = finalSteps,
-                needsConfirmation = policyDecision.needsConfirmation || root.optBoolean("needsConfirmation", false),
+                needsConfirmation = effectiveNeedsConfirmation || root.optBoolean("needsConfirmation", false),
             ),
         )
+    }
+
+    private fun enforceCurrentScreenRiskGate(
+        input: PlannerInput,
+        steps: List<ExecutionStep>,
+    ): List<ExecutionStep> {
+        val lowerGoal = input.goal.lowercase()
+        if (isPlayStoreInstallGoal(lowerGoal, input) &&
+            !playStoreInstallConfirmationGranted(input)
+        ) {
+            val query = playStoreSearchQueryFor(extractPlayStoreInstallQuery(input.goal) ?: "Claude")
+            val directPackageId = playStoreDirectPackageFor(query)
+            val installSelector = playStoreInstallSelector(input.serializedNodeTree)
+            if (installSelector != null && playStoreTargetAppVisible(query, input.serializedNodeTree)) {
+                return playStoreInstallConfirmationSteps(installSelector, directPackageId)
+            }
+            if (steps.size == 1 && steps.single().action is AgentAction.Stop) {
+                return normalizePlayStoreInstallPlan(input, emptyList())
+            }
+        }
+        return steps
+    }
+
+    private fun shouldDeferPolicyConfirmation(
+        input: PlannerInput,
+        steps: List<ExecutionStep>,
+    ): Boolean {
+        val lowerGoal = input.goal.lowercase()
+        if (isPlayStoreInstallGoal(lowerGoal, input)) {
+            if (steps.any { it.action is AgentAction.ConfirmUser }) {
+                return false
+            }
+            val query = playStoreSearchQueryFor(extractPlayStoreInstallQuery(input.goal) ?: "Claude")
+            val installVisibleOnTarget =
+                playStoreInstallSelector(input.serializedNodeTree) != null &&
+                    playStoreTargetAppVisible(query, input.serializedNodeTree)
+            return !installVisibleOnTarget
+        }
+        if (!isKorailTalkTrainSearchGoal(lowerGoal, input) || !goalRequestsBooking(lowerGoal)) {
+            return false
+        }
+        if (korailBookingConfirmationGranted(input)) {
+            return true
+        }
+        if (steps.any { it.action is AgentAction.ConfirmUser }) {
+            return false
+        }
+        return !korailResultsVisible(input.serializedNodeTree)
     }
 
     private fun normalizeGoalSpecificSteps(
@@ -471,8 +574,11 @@ class OpenRouterLocalAgentRuntime(
             isSamsungWifiSettingsGoal(lowerGoal) -> normalizeSamsungWifiSettingsPlan(steps)
             isSamsungSettingsSearchGoal(lowerGoal, steps) -> normalizeSamsungSettingsSearchPlan(input.goal, steps)
             isSamsungClockAlarmGoal(lowerGoal, steps) -> normalizeSamsungClockAlarmPlan(steps)
-            isSamsungContactsSearchGoal(lowerGoal, steps) -> normalizeSamsungContactsSearchPlan(input.goal, steps)
+            isSamsungContactsSearchGoal(lowerGoal, steps) -> normalizeSamsungContactsSearchPlan(input, steps)
             isSamsungMessagesSendGoal(lowerGoal, steps) -> normalizeSamsungMessagesSendPlan(input.goal, steps)
+            isSamsungCameraGoal(lowerGoal, steps) -> normalizeSamsungCameraPlan(input.goal, steps)
+            isPlayStoreInstallGoal(lowerGoal, input) -> normalizePlayStoreInstallPlan(input, steps)
+            isKorailTalkTrainSearchGoal(lowerGoal, input) -> normalizeKorailTalkTrainSearchPlan(input, steps)
             else -> steps
         }
     }
@@ -557,6 +663,21 @@ class OpenRouterLocalAgentRuntime(
         if (window.lastOrNull()?.action is AgentAction.ConfirmUser && nextStep != null) {
             window += nextStep
         }
+        val confirmIndex = window.indexOfFirst { it.action is AgentAction.ConfirmUser }
+        if (confirmIndex >= 0 && window.size < trimmedSteps.size) {
+            var includeIndex = window.size
+            while (includeIndex < trimmedSteps.size) {
+                val action = trimmedSteps[includeIndex].action
+                window += trimmedSteps[includeIndex]
+                includeIndex += 1
+                if (action !is AgentAction.WaitForNode &&
+                    action !is AgentAction.WaitForApp &&
+                    action !is AgentAction.WaitForCondition
+                ) {
+                    break
+                }
+            }
+        }
         if (nextStep?.action is AgentAction.Stop) {
             window += nextStep
         }
@@ -587,6 +708,7 @@ class OpenRouterLocalAgentRuntime(
 
             is AgentAction.WaitForNode -> selectorVisible(action.selector, input.serializedNodeTree)
             is AgentAction.AssertVisible -> selectorVisible(action.selector, input.serializedNodeTree)
+            is AgentAction.OpenUri -> false
             is AgentAction.Tap,
             is AgentAction.InputText,
             is AgentAction.SubmitInput,
@@ -635,7 +757,7 @@ class OpenRouterLocalAgentRuntime(
                 }.toMap()
             selector.text?.let { if (!segments["text"].orEmpty().contains(it, ignoreCase = true)) return@any false }
             selector.contentDescription?.let { if (!segments["desc"].orEmpty().contains(it, ignoreCase = true)) return@any false }
-            selector.resourceId?.let { if (segments["id"] != it) return@any false }
+            selector.resourceId?.let { if (!resourceIdMatches(it, segments["id"])) return@any false }
             selector.className?.let { if (segments["class"] != it) return@any false }
             selector.packageName?.let { if (segments["package"] != it) return@any false }
             selector.editable?.let { if (segments["editable"]?.toBooleanStrictOrNull() != it) return@any false }
@@ -649,6 +771,18 @@ class OpenRouterLocalAgentRuntime(
             }
             true
         }
+
+    private fun resourceIdMatches(
+        expected: String,
+        actual: String?,
+    ): Boolean {
+        if (actual.isNullOrBlank()) return false
+        val expectedLower = expected.trim().lowercase()
+        val actualLower = actual.trim().lowercase()
+        return actualLower == expectedLower ||
+            actualLower.endsWith("/$expectedLower") ||
+            actualLower.endsWith(":id/$expectedLower")
+    }
 
     private fun normalizeSamsungBluetoothSettingsPlan(steps: List<ExecutionStep>): List<ExecutionStep> {
         val launchStep =
@@ -912,11 +1046,11 @@ class OpenRouterLocalAgentRuntime(
     }
 
     private fun normalizeSamsungContactsSearchPlan(
-        goal: String,
+        input: PlannerInput,
         steps: List<ExecutionStep>,
     ): List<ExecutionStep> {
         val query = steps.map { it.action }.filterIsInstance<AgentAction.InputText>().lastOrNull()?.text
-            ?: extractSearchQuery(goal)
+            ?: extractSearchQuery(input.goal)
             ?: return steps
         val launchStep =
             steps.firstOrNull { (it.action as? AgentAction.LaunchApp)?.packageName == SAMSUNG_CONTACTS_PACKAGE }
@@ -932,32 +1066,63 @@ class OpenRouterLocalAgentRuntime(
                 )
         val searchButtonSelector = NodeSelector(resourceId = SAMSUNG_CONTACTS_SEARCH_BUTTON_ID)
         val searchFieldSelector = NodeSelector(resourceId = SAMSUNG_CONTACTS_SEARCH_TEXT_ID)
-        return listOf(
-            launchStep,
-            waitForAppStep,
-            ExecutionStep(
-                action = AgentAction.Tap(
-                    selector = searchButtonSelector,
-                    label = "Open Contacts search",
+        val inContacts = input.foregroundPackage == SAMSUNG_CONTACTS_PACKAGE ||
+            input.lastExternalForegroundPackage == SAMSUNG_CONTACTS_PACKAGE
+        val searchFieldVisible = selectorVisible(searchFieldSelector, input.serializedNodeTree)
+        val searchButtonVisible = selectorVisible(searchButtonSelector, input.serializedNodeTree)
+        return buildList {
+            if (!inContacts) {
+                add(launchStep)
+                add(waitForAppStep)
+                return@buildList
+            }
+            if (!searchFieldVisible) {
+                if (!searchButtonVisible) {
+                    add(
+                        ExecutionStep(
+                            action = AgentAction.WaitForNode(searchButtonSelector),
+                            expectedObservation = "Contacts search button is visible.",
+                        ),
+                    )
+                }
+                add(
+                    ExecutionStep(
+                        action = AgentAction.Tap(
+                            selector = searchButtonSelector,
+                            label = "Open Contacts search",
+                        ),
+                        expectedObservation = "Contacts search field opens.",
+                    ),
+                )
+                add(
+                    ExecutionStep(
+                        action = AgentAction.WaitForNode(searchFieldSelector),
+                        expectedObservation = "Contacts search field is visible and focused.",
+                    ),
+                )
+            }
+            add(
+                ExecutionStep(
+                    action = AgentAction.InputText(
+                        selector = searchFieldSelector,
+                        text = query,
+                    ),
+                    expectedObservation = "The search query appears in Contacts.",
                 ),
-                expectedObservation = "Contacts search field opens.",
-            ),
-            ExecutionStep(
-                action = AgentAction.WaitForNode(searchFieldSelector),
-                expectedObservation = "Contacts search field is visible and focused.",
-            ),
-            ExecutionStep(
-                action = AgentAction.InputText(
-                    selector = searchFieldSelector,
-                    text = query,
+            )
+            add(
+                ExecutionStep(
+                    action = AgentAction.SubmitInput(searchFieldSelector),
+                    expectedObservation = "Contacts search results update for the query.",
                 ),
-                expectedObservation = "The search query appears in Contacts.",
-            ),
-            ExecutionStep(
-                action = AgentAction.SubmitInput(searchFieldSelector),
-                expectedObservation = "Contacts search results update for the query.",
-            ),
-        )
+            )
+            add(
+                ExecutionStep(
+                    action = AgentAction.Stop,
+                    expectedObservation = "Contacts search results are visible.",
+                ),
+            )
+        }
     }
 
     private fun normalizeSamsungMessagesSendPlan(
@@ -1074,6 +1239,408 @@ class OpenRouterLocalAgentRuntime(
         )
     }
 
+    private fun normalizeSamsungCameraPlan(
+        goal: String,
+        steps: List<ExecutionStep>,
+    ): List<ExecutionStep> {
+        val launchStep =
+            steps.firstOrNull { (it.action as? AgentAction.LaunchApp)?.packageName == SAMSUNG_CAMERA_PACKAGE }
+                ?: ExecutionStep(
+                    action = AgentAction.LaunchApp(SAMSUNG_CAMERA_PACKAGE),
+                    expectedObservation = "Camera launches.",
+                )
+        val waitForAppStep =
+            steps.firstOrNull { (it.action as? AgentAction.WaitForApp)?.packageName == SAMSUNG_CAMERA_PACKAGE }
+                ?: ExecutionStep(
+                    action = AgentAction.WaitForApp(SAMSUNG_CAMERA_PACKAGE),
+                    expectedObservation = "Camera becomes foreground.",
+                )
+        if (!goalRequestsPhotoCapture(goal.lowercase())) {
+            return listOf(
+                launchStep,
+                waitForAppStep,
+                ExecutionStep(
+                    action = AgentAction.Stop,
+                    expectedObservation = "Samsung Camera is open in the foreground.",
+                ),
+            )
+        }
+
+        val shutterSelector = NodeSelector(
+            contentDescription = SAMSUNG_CAMERA_SHUTTER_DESC,
+            resourceId = SAMSUNG_CAMERA_SHUTTER_ID,
+            packageName = SAMSUNG_CAMERA_PACKAGE,
+        )
+        return listOf(
+            launchStep,
+            waitForAppStep,
+            ExecutionStep(
+                action = AgentAction.WaitForNode(shutterSelector),
+                expectedObservation = "Camera shutter button is visible.",
+            ),
+            ExecutionStep(
+                action = AgentAction.ConfirmUser("User confirmation required before taking a photo."),
+                expectedObservation = "Execution pauses before camera capture.",
+            ),
+            ExecutionStep(
+                action = AgentAction.Tap(
+                    selector = shutterSelector,
+                    label = "Take photo",
+                ),
+                expectedObservation = "The camera shutter is pressed.",
+            ),
+        )
+    }
+
+    private fun normalizePlayStoreInstallPlan(
+        input: PlannerInput,
+        steps: List<ExecutionStep>,
+    ): List<ExecutionStep> {
+        val query = playStoreSearchQueryFor(extractPlayStoreInstallQuery(input.goal) ?: "Claude")
+        val launchStep =
+            steps.firstOrNull { (it.action as? AgentAction.LaunchApp)?.packageName == PLAY_STORE_PACKAGE }
+                ?: ExecutionStep(
+                    action = AgentAction.LaunchApp(PLAY_STORE_PACKAGE),
+                    expectedObservation = "Google Play Store launches.",
+                )
+        val waitForAppStep =
+            steps.firstOrNull { (it.action as? AgentAction.WaitForApp)?.packageName == PLAY_STORE_PACKAGE }
+                ?: ExecutionStep(
+                    action = AgentAction.WaitForApp(PLAY_STORE_PACKAGE),
+                    expectedObservation = "Google Play Store becomes foreground.",
+                )
+        val tree = input.serializedNodeTree
+        val inPlayStore = input.foregroundPackage == PLAY_STORE_PACKAGE ||
+            tree.lineSequence().any { line -> "package=$PLAY_STORE_PACKAGE" in line }
+        val directPackageId = playStoreDirectPackageFor(query)
+        if (!inPlayStore) {
+            if (directPackageId != null) {
+                return playStoreDirectListingSteps(directPackageId)
+            }
+            return listOf(launchStep, waitForAppStep)
+        }
+
+        val installSelector = playStoreInstallSelector(tree)
+        if (installSelector != null && playStoreTargetAppVisible(query, tree)) {
+            return playStoreInstallConfirmationSteps(installSelector, directPackageId)
+        }
+
+        if (directPackageId != null && !playStoreDirectListingAlreadyOpened(directPackageId, input)) {
+            return playStoreDirectListingSteps(directPackageId)
+        }
+
+        val searchFieldSelector = NodeSelector(
+            className = "android.widget.EditText",
+            editable = true,
+            packageName = PLAY_STORE_PACKAGE,
+        )
+        if (playStoreSearchFieldVisible(tree)) {
+            val searchSuggestionSelector = playStoreExactSearchSuggestionSelector(query)
+            return listOf(
+                ExecutionStep(
+                    action = AgentAction.ClearText(searchFieldSelector),
+                    expectedObservation = "The Google Play search field is ready for the requested app name.",
+                ),
+                ExecutionStep(
+                    action = AgentAction.InputText(
+                        selector = searchFieldSelector,
+                        text = query,
+                    ),
+                    expectedObservation = "The requested app name appears in Google Play search.",
+                ),
+                ExecutionStep(
+                    action = AgentAction.WaitForNode(searchSuggestionSelector),
+                    expectedObservation = "The exact Google Play search suggestion is visible.",
+                ),
+                ExecutionStep(
+                    action = AgentAction.Tap(
+                        selector = searchSuggestionSelector,
+                        label = "Search Google Play for $query",
+                    ),
+                    expectedObservation = "Google Play shows the requested app result or detail page.",
+                ),
+            )
+        }
+
+        val resultSelector = playStoreResultSelector(query, tree)
+        if (resultSelector != null) {
+            return listOf(
+                ExecutionStep(
+                    action = AgentAction.WaitForNode(resultSelector),
+                    expectedObservation = "The requested app result is visible in Google Play.",
+                ),
+                ExecutionStep(
+                    action = AgentAction.Tap(
+                        selector = resultSelector,
+                        label = "Open $query result",
+                    ),
+                    expectedObservation = "The app detail page opens.",
+                ),
+            )
+        }
+
+        val searchBarSelector = playStoreSearchBarSelector(tree)
+        if (searchBarSelector != null) {
+            return listOf(
+                ExecutionStep(
+                    action = AgentAction.WaitForNode(searchBarSelector),
+                    expectedObservation = "The Google Play search bar is visible.",
+                ),
+                ExecutionStep(
+                    action = AgentAction.Tap(
+                        selector = searchBarSelector,
+                        label = "Focus Google Play search",
+                    ),
+                    expectedObservation = "The Google Play search field opens.",
+                ),
+                ExecutionStep(
+                    action = AgentAction.WaitForNode(searchFieldSelector),
+                    expectedObservation = "The Google Play search field is visible.",
+                ),
+            )
+        }
+
+        val searchTabSelector = playStoreSearchTabSelector(tree)
+        val defaultSearchBarSelector = NodeSelector(
+            contentDescription = PLAY_STORE_SEARCH_DESC_KO,
+            packageName = PLAY_STORE_PACKAGE,
+        )
+        return listOf(
+            ExecutionStep(
+                action = AgentAction.WaitForNode(searchTabSelector),
+                expectedObservation = "The Google Play search tab is visible.",
+            ),
+            ExecutionStep(
+                action = AgentAction.Tap(
+                    selector = searchTabSelector,
+                    label = "Open Google Play search",
+                ),
+                expectedObservation = "The Google Play search field opens.",
+            ),
+            ExecutionStep(
+                action = AgentAction.WaitForNode(defaultSearchBarSelector),
+                expectedObservation = "The Google Play search bar is visible.",
+            ),
+            ExecutionStep(
+                action = AgentAction.Tap(
+                    selector = defaultSearchBarSelector,
+                    label = "Focus Google Play search",
+                ),
+                expectedObservation = "The Google Play search field opens.",
+            ),
+            ExecutionStep(
+                action = AgentAction.WaitForNode(searchFieldSelector),
+                expectedObservation = "The Google Play search field is visible.",
+            ),
+        )
+    }
+
+    private fun normalizeKorailTalkTrainSearchPlan(
+        input: PlannerInput,
+        steps: List<ExecutionStep>,
+    ): List<ExecutionStep> {
+        val launchStep =
+            steps.firstOrNull { (it.action as? AgentAction.LaunchApp)?.packageName == KORAIL_TALK_PACKAGE }
+                ?: ExecutionStep(
+                    action = AgentAction.LaunchApp(KORAIL_TALK_PACKAGE),
+                    expectedObservation = "KorailTalk launches.",
+                )
+        val waitForAppStep =
+            steps.firstOrNull { (it.action as? AgentAction.WaitForApp)?.packageName == KORAIL_TALK_PACKAGE }
+                ?: ExecutionStep(
+                    action = AgentAction.WaitForApp(KORAIL_TALK_PACKAGE),
+                    expectedObservation = "KorailTalk becomes foreground.",
+                )
+        val inKorailTalk = input.foregroundPackage == KORAIL_TALK_PACKAGE ||
+            input.lastExternalForegroundPackage == KORAIL_TALK_PACKAGE
+        if (!inKorailTalk) {
+            return listOf(launchStep, waitForAppStep)
+        }
+
+        val tree = input.serializedNodeTree
+        if (goalRequestsBooking(input.goal.lowercase()) && korailReservationOptionSelected(input)) {
+            return korailBookingButtonSteps(includeConfirm = false)
+        }
+
+        if (goalRequestsBooking(input.goal.lowercase()) && korailBookingButtonVisible(tree)) {
+            return korailBookingButtonSteps(includeConfirm = !korailBookingConfirmationGranted(input))
+        }
+
+        if (korailResultsVisible(tree)) {
+            if (goalRequestsBooking(input.goal.lowercase())) {
+                return korailBookingConfirmationSteps()
+            }
+            return listOf(
+                ExecutionStep(
+                    action = AgentAction.Stop,
+                    expectedObservation = "KorailTalk train results are visible.",
+                ),
+            )
+        }
+
+        val stationSelector = NodeSelector(
+            resourceId = KORAIL_STATION_NAME_ID,
+            packageName = KORAIL_TALK_PACKAGE,
+        )
+        if (korailStationSheetVisible(tree)) {
+            val targetStation = if (korailDepartureIsDaegu(tree)) "서울" else "동대구"
+            return listOf(
+                ExecutionStep(
+                    action = AgentAction.WaitForNode(stationSelector.copy(text = targetStation)),
+                    expectedObservation = "$targetStation station option is visible.",
+                ),
+                ExecutionStep(
+                    action = AgentAction.Tap(
+                        selector = stationSelector.copy(text = targetStation),
+                        label = "Select $targetStation station",
+                    ),
+                    expectedObservation = "$targetStation is selected.",
+                ),
+            )
+        }
+
+        if (!korailDepartureIsDaegu(tree)) {
+            val departureSelector = NodeSelector(
+                resourceId = KORAIL_DEPARTURE_STATION_ID,
+                packageName = KORAIL_TALK_PACKAGE,
+            )
+            return listOf(
+                ExecutionStep(
+                    action = AgentAction.WaitForNode(departureSelector),
+                    expectedObservation = "KorailTalk departure station field is visible.",
+                ),
+                ExecutionStep(
+                    action = AgentAction.Tap(
+                        selector = departureSelector,
+                        label = "Open departure station picker",
+                    ),
+                    expectedObservation = "Departure station picker opens.",
+                ),
+            )
+        }
+
+        if (!korailArrivalIsSeoul(tree)) {
+            val arrivalSelector = NodeSelector(
+                resourceId = KORAIL_ARRIVAL_STATION_ID,
+                packageName = KORAIL_TALK_PACKAGE,
+            )
+            return listOf(
+                ExecutionStep(
+                    action = AgentAction.WaitForNode(arrivalSelector),
+                    expectedObservation = "KorailTalk arrival station field is visible.",
+                ),
+                ExecutionStep(
+                    action = AgentAction.Tap(
+                        selector = arrivalSelector,
+                        label = "Open arrival station picker",
+                    ),
+                    expectedObservation = "Arrival station picker opens.",
+                ),
+            )
+        }
+
+        val searchSelector = NodeSelector(
+            text = "열차조회",
+            resourceId = KORAIL_TRAIN_SEARCH_BUTTON_ID,
+            packageName = KORAIL_TALK_PACKAGE,
+        )
+        val resultsSelector = NodeSelector(
+            text = "열차 조회",
+            resourceId = KORAIL_RESULTS_TITLE_ID,
+            packageName = KORAIL_TALK_PACKAGE,
+        )
+        val lookupSteps = listOf(
+            ExecutionStep(
+                action = AgentAction.WaitForNode(searchSelector),
+                expectedObservation = "KorailTalk train search button is visible.",
+            ),
+            ExecutionStep(
+                action = AgentAction.Tap(
+                    selector = searchSelector,
+                    label = "Search trains",
+                ),
+                expectedObservation = "KorailTalk submits the read-only train lookup.",
+            ),
+            ExecutionStep(
+                action = AgentAction.WaitForNode(resultsSelector),
+                expectedObservation = "KorailTalk train results screen appears.",
+            ),
+        )
+        if (goalRequestsBooking(input.goal.lowercase())) {
+            return lookupSteps + korailBookingConfirmationSteps()
+        }
+        return lookupSteps + ExecutionStep(
+            action = AgentAction.Stop,
+            expectedObservation = "Evening train options are visible.",
+        )
+    }
+
+    private fun korailBookingConfirmationSteps(): List<ExecutionStep> {
+        val reservationSelector = NodeSelector(
+            contentDescription = KORAIL_STANDARD_AVAILABLE_FARE_TEXT,
+            resourceId = KORAIL_STANDARD_RESERVE_BUTTON_ID,
+            packageName = KORAIL_TALK_PACKAGE,
+            clickable = true,
+        )
+        return listOf(
+            ExecutionStep(
+                action = AgentAction.ConfirmUser(KORAIL_BOOKING_CONFIRM_REASON),
+                expectedObservation = "Execution pauses before selecting a train reservation option.",
+            ),
+            ExecutionStep(
+                action = AgentAction.WaitForNode(reservationSelector),
+                expectedObservation = "A KorailTalk reservation option is visible.",
+            ),
+            ExecutionStep(
+                action = AgentAction.Tap(
+                    selector = reservationSelector,
+                    label = "Open KorailTalk reservation",
+                ),
+                expectedObservation = "KorailTalk enters the guarded reservation step.",
+            ),
+        ) + korailBookingButtonSteps(includeConfirm = false)
+    }
+
+    private fun korailBookingButtonSteps(includeConfirm: Boolean): List<ExecutionStep> {
+        val bookingButtonSelector = NodeSelector(
+            text = "예매",
+            resourceId = KORAIL_BOOKING_BUTTON_ID,
+            packageName = KORAIL_TALK_PACKAGE,
+            clickable = true,
+        )
+        return buildList {
+            if (includeConfirm) {
+                add(
+                    ExecutionStep(
+                        action = AgentAction.ConfirmUser(KORAIL_BOOKING_CONFIRM_REASON),
+                        expectedObservation = "Execution pauses before continuing from KorailTalk booking.",
+                    ),
+                )
+            }
+            add(
+                ExecutionStep(
+                    action = AgentAction.WaitForNode(bookingButtonSelector),
+                    expectedObservation = "KorailTalk shows the final reservation button for the selected train.",
+                ),
+            )
+            add(
+                ExecutionStep(
+                    action = AgentAction.Tap(
+                        selector = bookingButtonSelector,
+                        label = "Continue KorailTalk booking",
+                    ),
+                    expectedObservation = "KorailTalk proceeds from the reservation confirmation sheet.",
+                ),
+            )
+            add(
+                ExecutionStep(
+                    action = AgentAction.Stop,
+                    expectedObservation = "Reservation entry was attempted; stop before login or payment handling.",
+                ),
+            )
+        }
+    }
+
     private fun buildNormalizedPlanJson(
         root: JSONObject,
         steps: List<ExecutionStep>,
@@ -1107,6 +1674,14 @@ class OpenRouterLocalAgentRuntime(
                 JSONObject()
                     .put("type", "launch_app")
                     .put("packageName", action.packageName)
+
+            is AgentAction.OpenUri ->
+                JSONObject()
+                    .put("type", "open_uri")
+                    .put("uri", action.uri)
+                    .apply {
+                        action.packageName?.let { packageName -> put("packageName", packageName) }
+                    }
 
             is AgentAction.WaitForApp ->
                 JSONObject()
@@ -1204,13 +1779,17 @@ class OpenRouterLocalAgentRuntime(
             selector.nearText?.let { put("nearText", it) }
         }
 
-    private fun parseAction(stepJson: JSONObject): AgentAction {
+    private fun parseAction(stepJson: JSONObject, input: PlannerInput): AgentAction {
         val payload = actionPayload(stepJson)
         val type = actionType(stepJson, payload)
         return when (type) {
-            "launch_app" -> AgentAction.LaunchApp(payload.requiredString("packageName", "package", "package_name"))
+            "launch_app" -> AgentAction.LaunchApp(
+                payload.optionalPackageName(input)
+                    ?: error("Missing required string: packageName/package/package_name"),
+            )
             "wait_for_app" -> AgentAction.WaitForApp(
-                packageName = payload.requiredString("packageName", "package", "package_name"),
+                packageName = payload.optionalPackageName(input)
+                    ?: error("Missing required string: packageName/package/package_name"),
                 timeoutMs = payload.optLong("timeoutMs", 15_000L).coerceAtLeast(15_000L),
             )
 
@@ -1252,26 +1831,66 @@ class OpenRouterLocalAgentRuntime(
     }
 
     private fun actionPayload(stepJson: JSONObject): JSONObject {
+        val payload = JSONObject(stepJson.toString())
         val nested = stepJson.optJSONObject("action") ?: stepJson.optJSONObject("step")
-        if (nested == null) return stepJson
-        return JSONObject(stepJson.toString()).apply {
-            nested.keys().forEach { key -> put(key, nested.get(key)) }
-        }
+        nested?.keys()?.forEach { key -> payload.put(key, nested.get(key)) }
+        val embeddedActionKey = embeddedActionKey(stepJson)
+        val embeddedAction = embeddedActionKey?.let { stepJson.optJSONObject(it) }
+        embeddedAction?.keys()?.forEach { key -> payload.put(key, embeddedAction.get(key)) }
+        embeddedActionKey?.let { payload.put("type", it.toActionType()) }
+        val parameters = stepJson.optJSONObject("parameters")
+            ?: stepJson.optJSONObject("params")
+            ?: stepJson.optJSONObject("arguments")
+        parameters?.keys()?.forEach { key -> payload.put(key, parameters.get(key)) }
+        return payload
     }
 
     private fun actionType(stepJson: JSONObject, payload: JSONObject): String {
+        if (payload.has("stop")) return "stop"
         val direct = payload.firstNonBlankString("type", "actionType", "action_type", "kind", "name")
         if (direct != null) return direct.toActionType()
         val action = stepJson.opt("action")
         if (action is String && action.isNotBlank()) return action.toActionType()
+        embeddedActionKey(stepJson)?.let { return it.toActionType() }
         error("Step missing action type. keys=${stepJson.keys().asSequence().toList().joinToString(",")}")
     }
+
+    private fun embeddedActionKey(stepJson: JSONObject): String? =
+        stepJson.keys().asSequence().firstOrNull { key ->
+            key.toActionType() in SUPPORTED_ACTION_TYPES && stepJson.optJSONObject(key) != null
+        }
 
     private fun JSONObject.firstNonBlankString(vararg keys: String): String? =
         keys.firstNotNullOfOrNull { key -> optString(key).takeIf { it.isNotBlank() } }
 
     private fun JSONObject.requiredString(vararg keys: String): String =
         firstNonBlankString(*keys) ?: error("Missing required string: ${keys.joinToString("/")}")
+
+    private fun JSONObject.optionalPackageName(input: PlannerInput): String? =
+        firstNonBlankString("packageName", "package", "package_name")
+            ?: inferPackageNameFromCandidate(input, this)
+
+    private fun inferPackageNameFromCandidate(
+        input: PlannerInput,
+        payload: JSONObject,
+    ): String? {
+        if (input.candidateApps.size == 1) return input.candidateApps.first().packageName
+        val appHint = payload.firstNonBlankString("appName", "app", "label", "target", "targetApp")
+            ?.lowercase()
+            .orEmpty()
+        if (appHint.isNotBlank()) {
+            input.candidateApps.firstOrNull { candidate ->
+                candidate.label.lowercase() in appHint ||
+                    appHint in candidate.label.lowercase() ||
+                    candidate.packageName.lowercase() in appHint
+            }?.let { return it.packageName }
+        }
+        val lowerGoal = input.goal.lowercase()
+        if (listOf("my files", "files", "내 파일", "파일").any { it in lowerGoal }) {
+            input.candidateApps.firstOrNull { it.packageName == SAMSUNG_MYFILES_PACKAGE }?.let { return it.packageName }
+        }
+        return null
+    }
 
     private fun String.toActionType(): String =
         trim()
@@ -1288,12 +1907,17 @@ class OpenRouterLocalAgentRuntime(
     private fun parseSelector(json: JSONObject): NodeSelector =
         NodeSelector(
             text = json.optString("text").ifBlank { null },
-            contentDescription = json.optString("contentDescription").ifBlank { null },
-            resourceId = json.optString("resourceId").ifBlank { null },
-            className = json.optString("className").ifBlank { null },
+            contentDescription = json.firstNonBlankString(
+                "contentDescription",
+                "content_description",
+                "desc",
+                "description",
+            ),
+            resourceId = json.firstNonBlankString("resourceId", "resource_id", "viewId", "view_id", "id"),
+            className = json.firstNonBlankString("className", "class_name", "class"),
             editable = json.takeIf { it.has("editable") }?.optBoolean("editable"),
             clickable = json.takeIf { it.has("clickable") }?.optBoolean("clickable"),
-            packageName = json.optString("packageName").ifBlank { null },
+            packageName = json.firstNonBlankString("packageName", "package_name", "package"),
             indexPath = json.optJSONArray("indexPath")?.let(::jsonArrayToInts).orEmpty(),
             boundsHint = json.optJSONObject("boundsHint")?.let { bounds ->
                 ScreenBounds(
@@ -1320,7 +1944,7 @@ class OpenRouterLocalAgentRuntime(
     ): String =
         JSONObject()
             .put("task", "repair_invalid_android_accessibility_plan")
-            .put("requirements", "Return STRICT JSON ONLY. Keep the same user goal. Analyze the current visibleNodes and recentActionHistory before planning. summary must describe the current screen situation and the next checkpoint. Never output a long full-flow script. Return only the next small horizon of steps, at most originalPrompt.stepBudget steps unless confirm_user is immediately followed by its guarded action. Continue from the current screen instead of restarting from the top when progress is already visible. Emit stop when the goal or the next safe checkpoint is already satisfied. launch_app and wait_for_app MUST include packageName and MUST use only package names listed in originalPrompt.candidateApps. Every tap, input_text, submit_input, clear_text, wait_for_node, and assert_visible step MUST include a selector object with at least one identifying field. press_global action must be one of BACK, HOME, RECENTS, NOTIFICATIONS, QUICK_SETTINGS. Do not use HOME, RECENTS, NOTIFICATIONS, or QUICK_SETTINGS unless the user explicitly requested that system surface. If the goal is to search in Chrome, use selector resourceId com.android.chrome:id/url_bar for input_text and submit_input, and set input_text.text to the exact query from the goal. If the goal is to open Bluetooth settings in Samsung Settings package com.android.settings, tap contentDescription 설정 검색 first, type Bluetooth into com.android.settings.intelligence:id/search_src_text, then tap the Bluetooth result. If the goal is to search in Samsung Settings package com.android.settings, open the homepage search button with contentDescription 설정 검색, then wait for and type into com.android.settings.intelligence:id/search_src_text. If the goal is to search in Samsung Contacts package com.samsung.android.app.contacts, tap com.samsung.android.app.contacts:id/menu_search before waiting for or typing into com.samsung.android.app.contacts:id/search_src_text. If the goal is to enter the Alarm tab in Samsung Clock package com.sec.android.app.clockpackage, use selector text 알람 with resourceId com.sec.android.app.clockpackage:id/title for the tab, then assert com.sec.android.app.clockpackage:id/alarm_main_layout is visible. If the goal is to send a message in Samsung Messages package com.samsung.android.messaging, tap com.samsung.android.messaging:id/fab, then tap com.samsung.android.messaging:id/chat_fab, type the recipient into com.samsung.android.messaging:id/search_src_text, tap com.samsung.android.messaging:id/chat_with_button, use com.samsung.android.messaging:id/message_edit_text for message body, and stop at confirm_user before com.samsung.android.messaging:id/send_button.")
+            .put("requirements", "Return STRICT JSON ONLY. Keep the same user goal. Analyze the current visibleNodes and recentActionHistory before planning. summary must describe the current screen situation and the next checkpoint. Never output a long full-flow script. Return only the next small horizon of steps, at most originalPrompt.stepBudget steps unless confirm_user is immediately followed by its guarded action. Continue from the current screen instead of restarting from the top when progress is already visible. Emit stop when the goal or the next safe checkpoint is already satisfied. launch_app and wait_for_app MUST include packageName and MUST use only package names listed in originalPrompt.candidateApps. Every tap, input_text, submit_input, clear_text, wait_for_node, and assert_visible step MUST include a selector object with at least one identifying field. Prefer stable text/contentDescription/resourceId selectors; if visibleNodes only expose idx=0.1 style paths, emit selector.indexPath as [0,1], and if visibleNodes expose b=left,top,right,bottom, emit selector.boundsHint with those four fields. press_global action must be one of BACK, HOME, RECENTS, NOTIFICATIONS, QUICK_SETTINGS. Do not use HOME, RECENTS, NOTIFICATIONS, or QUICK_SETTINGS unless the user explicitly requested that system surface. If the goal is to search in Chrome, use selector resourceId com.android.chrome:id/url_bar for input_text and submit_input, and set input_text.text to the exact query from the goal. If the goal is to open Bluetooth settings in Samsung Settings package com.android.settings, tap contentDescription 설정 검색 first, type Bluetooth into com.android.settings.intelligence:id/search_src_text, then tap the Bluetooth result. If the goal is to search in Samsung Settings package com.android.settings, open the homepage search button with contentDescription 설정 검색, then wait for and type into com.android.settings.intelligence:id/search_src_text. If the goal is to search in Samsung Contacts package com.samsung.android.app.contacts, tap com.samsung.android.app.contacts:id/menu_search before waiting for or typing into com.samsung.android.app.contacts:id/search_src_text. If the goal is to enter the Alarm tab in Samsung Clock package com.sec.android.app.clockpackage, use selector text 알람 with resourceId com.sec.android.app.clockpackage:id/title for the tab, then assert com.sec.android.app.clockpackage:id/alarm_main_layout is visible. If the goal is to open Samsung Camera package com.sec.android.app.camera, launch it, wait_for_app, then stop; do not wait for com.sec.android.app.camera:id/camera_viewfinder. For camera preview evidence use com.sec.android.app.camera:id/camera_preview only if it is visible. If the goal is to take a photo, require confirm_user before tapping shutter selector resourceId com.sec.android.app.camera:id/normal_center_button with contentDescription 사진 촬영. If the goal is to install or download an app through Google Play Store package com.android.vending, use the appSkillGuidance Play Store procedure: open Search/검색, type the requested app name into the editable search field, submit, then require confirm_user before tapping 설치 or Install. Stop before payment, login, account, or permission prompts. If the goal is to send a message in Samsung Messages package com.samsung.android.messaging, tap com.samsung.android.messaging:id/fab, then tap com.samsung.android.messaging:id/chat_fab, type the recipient into com.samsung.android.messaging:id/search_src_text, tap com.samsung.android.messaging:id/chat_with_button, use com.samsung.android.messaging:id/message_edit_text for message body, and stop at confirm_user before com.samsung.android.messaging:id/send_button. Booking, reservation, order, checkout, 예매, 예약, 주문, and payment actions must require confirm_user before the app enters the commit step.")
             .put("validationError", validationError.take(240))
             .put("originalPrompt", originalPrompt.take(OPENROUTER_MAX_PROMPT_CHARS / 2))
             .put("invalidOutput", invalidOutput.take(OPENROUTER_MAX_PROMPT_CHARS / 2))
@@ -1470,18 +2094,22 @@ class OpenRouterLocalAgentRuntime(
             val tapAction = steps.map { it.action }.filterIsInstance<AgentAction.Tap>().firstOrNull()
             val waitForNodeAction = steps.map { it.action }.filterIsInstance<AgentAction.WaitForNode>().lastOrNull()
             val inputAction = steps.map { it.action }.filterIsInstance<AgentAction.InputText>().lastOrNull()
-            require(tapAction?.selector?.resourceId == SAMSUNG_CONTACTS_SEARCH_BUTTON_ID) {
-                "Samsung Contacts search plans must tap $SAMSUNG_CONTACTS_SEARCH_BUTTON_ID first."
-            }
-            require(waitForNodeAction?.selector?.resourceId == SAMSUNG_CONTACTS_SEARCH_TEXT_ID) {
-                "Samsung Contacts search plans must wait for $SAMSUNG_CONTACTS_SEARCH_TEXT_ID."
-            }
-            require(inputAction?.selector?.resourceId == SAMSUNG_CONTACTS_SEARCH_TEXT_ID) {
-                "Samsung Contacts search input_text must target $SAMSUNG_CONTACTS_SEARCH_TEXT_ID."
-            }
-            extractSearchQuery(goal)?.let { query ->
-                require(inputAction.text.equals(query, ignoreCase = true)) {
-                    "Samsung Contacts search input_text must use the exact query '$query'."
+            if (inputAction != null) {
+                if (tapAction != null) {
+                    require(tapAction.selector.resourceId == SAMSUNG_CONTACTS_SEARCH_BUTTON_ID) {
+                        "Samsung Contacts search plans must tap $SAMSUNG_CONTACTS_SEARCH_BUTTON_ID first."
+                    }
+                    require(waitForNodeAction?.selector?.resourceId == SAMSUNG_CONTACTS_SEARCH_TEXT_ID) {
+                        "Samsung Contacts search plans must wait for $SAMSUNG_CONTACTS_SEARCH_TEXT_ID."
+                    }
+                }
+                require(inputAction.selector.resourceId == SAMSUNG_CONTACTS_SEARCH_TEXT_ID) {
+                    "Samsung Contacts search input_text must target $SAMSUNG_CONTACTS_SEARCH_TEXT_ID."
+                }
+                extractSearchQuery(goal)?.let { query ->
+                    require(inputAction.text.equals(query, ignoreCase = true)) {
+                        "Samsung Contacts search input_text must use the exact query '$query'."
+                    }
                 }
             }
         }
@@ -1535,6 +2163,40 @@ class OpenRouterLocalAgentRuntime(
             }
             require(tapActions.lastOrNull()?.selector?.resourceId == SAMSUNG_MESSAGES_SEND_BUTTON_ID) {
                 "Samsung Messages plans must tap $SAMSUNG_MESSAGES_SEND_BUTTON_ID after confirm_user."
+            }
+        }
+        if (isSamsungCameraGoal(lowerGoal, steps)) {
+            val badCameraSelector = steps.map { it.action }.any { action ->
+                when (action) {
+                    is AgentAction.WaitForNode -> action.selector.resourceId == "com.sec.android.app.camera:id/camera_viewfinder"
+                    is AgentAction.AssertVisible -> action.selector.resourceId == "com.sec.android.app.camera:id/camera_viewfinder"
+                    is AgentAction.Tap -> action.selector.resourceId == "com.sec.android.app.camera:id/camera_viewfinder"
+                    else -> false
+                }
+            }
+            require(!badCameraSelector) {
+                "Samsung Camera plans must not use nonexistent selector com.sec.android.app.camera:id/camera_viewfinder."
+            }
+            if (goalRequestsPhotoCapture(lowerGoal)) {
+                val tapActions = steps.map { it.action }.filterIsInstance<AgentAction.Tap>()
+                val confirmIndex = steps.indexOfFirst { it.action is AgentAction.ConfirmUser }
+                val shutterTapIndex = steps.indexOfFirst { step ->
+                    val tap = step.action as? AgentAction.Tap ?: return@indexOfFirst false
+                    tap.selector.resourceId == SAMSUNG_CAMERA_SHUTTER_ID
+                }
+                require(confirmIndex >= 0) {
+                    "Samsung Camera capture plans must include confirm_user before pressing the shutter."
+                }
+                require(shutterTapIndex > confirmIndex) {
+                    "Samsung Camera capture plans must tap $SAMSUNG_CAMERA_SHUTTER_ID after confirm_user."
+                }
+                require(tapActions.lastOrNull()?.selector?.contentDescription == SAMSUNG_CAMERA_SHUTTER_DESC) {
+                    "Samsung Camera capture plans must use contentDescription '$SAMSUNG_CAMERA_SHUTTER_DESC'."
+                }
+            } else {
+                require(steps.none { it.action is AgentAction.Tap }) {
+                    "Samsung Camera open-only plans must stop after launch_app/wait_for_app without tapping controls."
+                }
             }
         }
     }
@@ -1600,6 +2262,322 @@ class OpenRouterLocalAgentRuntime(
         ("messages" in lowerGoal || "메시지" in lowerGoal) &&
             ("send" in lowerGoal || "보내" in lowerGoal)
 
+    private fun isSamsungCameraGoal(
+        lowerGoal: String,
+        steps: List<ExecutionStep>,
+    ): Boolean =
+        listOf("camera", "카메라").any { it in lowerGoal } ||
+            goalRequestsPhotoCapture(lowerGoal) ||
+            steps.any { step ->
+                when (val action = step.action) {
+                    is AgentAction.LaunchApp -> action.packageName == SAMSUNG_CAMERA_PACKAGE
+                    is AgentAction.WaitForApp -> action.packageName == SAMSUNG_CAMERA_PACKAGE
+                    is AgentAction.WaitForNode -> action.selector.packageName == SAMSUNG_CAMERA_PACKAGE ||
+                        action.selector.resourceId?.startsWith("$SAMSUNG_CAMERA_PACKAGE:id/") == true
+                    is AgentAction.AssertVisible -> action.selector.packageName == SAMSUNG_CAMERA_PACKAGE ||
+                        action.selector.resourceId?.startsWith("$SAMSUNG_CAMERA_PACKAGE:id/") == true
+                    is AgentAction.Tap -> action.selector.packageName == SAMSUNG_CAMERA_PACKAGE ||
+                        action.selector.resourceId?.startsWith("$SAMSUNG_CAMERA_PACKAGE:id/") == true
+                    else -> false
+                }
+            }
+
+    private fun isPlayStoreInstallGoal(
+        lowerGoal: String,
+        input: PlannerInput,
+    ): Boolean {
+        val asksForInstall = listOf("install", "download", "설치", "다운로드").any { it in lowerGoal }
+        val referencesPlayStore = listOf("play store", "google play", "플레이 스토어", "플레이스토어").any { it in lowerGoal } ||
+            input.candidateApps.any { it.packageName == PLAY_STORE_PACKAGE }
+        return asksForInstall && referencesPlayStore
+    }
+
+    private fun isKorailTalkTrainSearchGoal(
+        lowerGoal: String,
+        input: PlannerInput,
+    ): Boolean {
+        val referencesKorail = listOf("코레일톡", "korail", "ktx").any { it in lowerGoal } ||
+            input.candidateApps.any { it.packageName == KORAIL_TALK_PACKAGE }
+        val asksForTrainLookup = listOf("check", "show", "search", "lookup", "find", "조회", "확인").any { it in lowerGoal } ||
+            "ktx" in lowerGoal
+        return referencesKorail && asksForTrainLookup
+    }
+
+    private fun korailStationSheetVisible(tree: String): Boolean =
+        tree.lineSequence().any { line -> KORAIL_STATION_SEARCH_ID in line }
+
+    private fun korailResultsVisible(tree: String): Boolean =
+        korailLineContains(tree, KORAIL_RESULTS_TITLE_ID, "열차 조회") &&
+            korailLineContains(tree, "com.korail.talk:id/departureTxt", "동대구") &&
+            korailLineContains(tree, "com.korail.talk:id/arrivalTxt", "서울") &&
+            tree.lineSequence().any { line ->
+                "id=com.korail.talk:id/trainNameTxt" in line &&
+                    ("KTX" in line || "ktx" in line)
+            }
+
+    private fun korailBookingButtonVisible(tree: String): Boolean =
+        korailLineContains(tree, KORAIL_BOOKING_BUTTON_ID, "예매")
+
+    private fun korailBookingConfirmationGranted(input: PlannerInput): Boolean =
+        input.recentActionHistory.any { it == "confirm_user:$KORAIL_BOOKING_CONFIRM_REASON" } ||
+            korailReservationOptionSelected(input)
+
+    private fun korailReservationOptionSelected(input: PlannerInput): Boolean =
+        input.recentActionHistory.any { history ->
+            history.startsWith("tap:") && "id=$KORAIL_STANDARD_RESERVE_BUTTON_ID" in history
+        }
+
+    private fun korailDepartureIsDaegu(tree: String): Boolean =
+        korailLineContains(tree, KORAIL_DEPARTURE_TEXT_ID, "동대구") ||
+            korailLineContains(tree, KORAIL_DEPARTURE_TEXT_ID, "대구")
+
+    private fun korailArrivalIsSeoul(tree: String): Boolean =
+        korailLineContains(tree, KORAIL_ARRIVAL_TEXT_ID, "서울")
+
+    private fun korailLineContains(
+        tree: String,
+        resourceId: String,
+        text: String,
+    ): Boolean =
+        tree.lineSequence().any { line ->
+            "id=$resourceId" in line && "text=$text" in line
+        }
+
+    private fun playStoreSearchFieldVisible(tree: String): Boolean =
+        tree.lineSequence().any { line ->
+            "package=$PLAY_STORE_PACKAGE" in line &&
+                "class=android.widget.EditText" in line &&
+                "editable=true" in line
+        }
+
+    private fun playStoreInstallSelector(tree: String): NodeSelector? {
+        val installText = when {
+            playStoreLineContainsText(tree, PLAY_STORE_INSTALL_TEXT_KO) -> PLAY_STORE_INSTALL_TEXT_KO
+            playStoreLineContainsText(tree, PLAY_STORE_INSTALL_TEXT_EN) -> PLAY_STORE_INSTALL_TEXT_EN
+            else -> return null
+        }
+        return NodeSelector(
+            text = installText,
+            packageName = PLAY_STORE_PACKAGE,
+        )
+    }
+
+    private fun playStoreDirectListingSteps(packageId: String): List<ExecutionStep> {
+        val uri = "market://details?id=$packageId"
+        val installSelector = NodeSelector(
+            text = PLAY_STORE_INSTALL_TEXT_KO,
+            packageName = PLAY_STORE_PACKAGE,
+        )
+        return listOf(
+            ExecutionStep(
+                action = AgentAction.OpenUri(
+                    uri = uri,
+                    packageName = PLAY_STORE_PACKAGE,
+                ),
+                expectedObservation = "Google Play opens the exact app listing.",
+            ),
+            ExecutionStep(
+                action = AgentAction.WaitForApp(PLAY_STORE_PACKAGE),
+                expectedObservation = "Google Play Store becomes foreground.",
+            ),
+            ExecutionStep(
+                action = AgentAction.WaitForNode(
+                    selector = installSelector,
+                    timeoutMs = 10_000L,
+                ),
+                expectedObservation = "The Google Play install button is visible on the exact listing.",
+            ),
+        )
+    }
+
+    private fun playStoreDirectListingAlreadyOpened(
+        packageId: String,
+        input: PlannerInput,
+    ): Boolean {
+        val key = AgentAction.OpenUri(
+            uri = "market://details?id=$packageId",
+            packageName = PLAY_STORE_PACKAGE,
+        ).historyKey()
+        return key in input.recentActionHistory
+    }
+
+    private fun playStoreInstallConfirmationSteps(
+        installSelector: NodeSelector,
+        directPackageId: String? = null,
+    ): List<ExecutionStep> =
+        buildList {
+            add(
+                ExecutionStep(
+                    action = AgentAction.ConfirmUser(PLAY_STORE_INSTALL_CONFIRM_REASON),
+                    expectedObservation = "Execution pauses before installing an app.",
+                ),
+            )
+            if (directPackageId != null) {
+                add(
+                    ExecutionStep(
+                        action = AgentAction.OpenUri(
+                            uri = "market://details?id=$directPackageId",
+                            packageName = PLAY_STORE_PACKAGE,
+                        ),
+                        expectedObservation = "Google Play returns to the exact app listing after confirmation.",
+                    ),
+                )
+                add(
+                    ExecutionStep(
+                        action = AgentAction.WaitForApp(PLAY_STORE_PACKAGE),
+                        expectedObservation = "Google Play Store becomes foreground.",
+                    ),
+                )
+            }
+            add(
+                ExecutionStep(
+                    action = AgentAction.WaitForNode(installSelector),
+                    expectedObservation = "The Google Play install button is visible.",
+                ),
+            )
+            add(
+                ExecutionStep(
+                    action = AgentAction.Tap(
+                        selector = installSelector,
+                        label = "Install app from Google Play",
+                    ),
+                    expectedObservation = "Google Play starts installing the selected app.",
+                ),
+            )
+            add(
+                ExecutionStep(
+                    action = AgentAction.Stop,
+                    expectedObservation = "Install was started or requested; stop before login, payment, permission, or account prompts.",
+                ),
+            )
+        }
+
+    private fun playStoreInstallConfirmationGranted(input: PlannerInput): Boolean =
+        input.recentActionHistory.any { it == "confirm_user:$PLAY_STORE_INSTALL_CONFIRM_REASON" }
+
+    private fun playStoreSearchTabSelector(tree: String): NodeSelector =
+        when {
+            playStoreLineContainsText(tree, PLAY_STORE_SEARCH_TAB_KO) ->
+                NodeSelector(text = PLAY_STORE_SEARCH_TAB_KO, packageName = PLAY_STORE_PACKAGE)
+            playStoreLineContainsText(tree, PLAY_STORE_SEARCH_TAB_EN) ->
+                NodeSelector(text = PLAY_STORE_SEARCH_TAB_EN, packageName = PLAY_STORE_PACKAGE)
+            playStoreLineContainsText(tree, PLAY_STORE_SEARCH_DESC_KO) ->
+                NodeSelector(contentDescription = PLAY_STORE_SEARCH_DESC_KO, packageName = PLAY_STORE_PACKAGE)
+            else ->
+                NodeSelector(text = PLAY_STORE_SEARCH_TAB_KO, packageName = PLAY_STORE_PACKAGE)
+        }
+
+    private fun playStoreSearchBarSelector(tree: String): NodeSelector? =
+        when {
+            playStoreLineContainsText(tree, PLAY_STORE_SEARCH_DESC_KO) ->
+                NodeSelector(contentDescription = PLAY_STORE_SEARCH_DESC_KO, packageName = PLAY_STORE_PACKAGE)
+            playStoreLineContainsText(tree, PLAY_STORE_SEARCH_PLACEHOLDER_KO) ->
+                NodeSelector(text = PLAY_STORE_SEARCH_PLACEHOLDER_KO, packageName = PLAY_STORE_PACKAGE)
+            else -> null
+        }
+
+    private fun playStoreExactSearchSuggestionSelector(query: String): NodeSelector =
+        NodeSelector(
+            contentDescription = "\"${query.trim()}\" 검색 ",
+            packageName = PLAY_STORE_PACKAGE,
+        )
+
+    private fun playStoreResultSelector(
+        query: String,
+        tree: String,
+    ): NodeSelector? {
+        val normalizedQuery = query.trim()
+        if (normalizedQuery.isBlank()) return null
+        val queryTokens = normalizedQuery.split(' ').filter { it.length > 2 }.map { it.lowercase() }
+        val resultLine = tree.lineSequence().firstOrNull { line ->
+            val lowerLine = line.lowercase()
+            "desc=" in lowerLine &&
+                !playStoreLooksLikeSearchSuggestion(lowerLine) &&
+                playStoreLineMatchesQueryTokens(lowerLine, queryTokens)
+        } ?: return null
+        val description = resultLine
+            .split(" | ")
+            .firstOrNull { it.startsWith("desc=") }
+            ?.removePrefix("desc=")
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        return NodeSelector(
+            contentDescription = description.take(80),
+            packageName = PLAY_STORE_PACKAGE,
+        )
+    }
+
+    private fun playStoreTargetAppVisible(
+        query: String,
+        tree: String,
+    ): Boolean {
+        val queryTokens = query
+            .trim()
+            .lowercase()
+            .split(Regex("\\s+"))
+            .filter { it.length > 2 }
+        if (queryTokens.isEmpty()) return false
+        return tree.lineSequence().any { line ->
+            val lowerLine = line.lowercase()
+            ("desc=" in lowerLine || "text=" in lowerLine) &&
+                !playStoreLooksLikeSearchSuggestion(lowerLine) &&
+                playStoreLineMatchesQueryTokens(lowerLine, queryTokens)
+        }
+    }
+
+    private fun playStoreLineMatchesQueryTokens(
+        lowerLine: String,
+        queryTokens: List<String>,
+    ): Boolean =
+        when {
+            queryTokens.isEmpty() -> false
+            queryTokens.size == 1 -> queryTokens.single() in lowerLine
+            else -> queryTokens.all { token -> token in lowerLine }
+        }
+
+    private fun playStoreLooksLikeSearchSuggestion(lowerLine: String): Boolean =
+        "\" " in lowerLine && "검색" in lowerLine
+
+    private fun playStoreLineContainsText(
+        tree: String,
+        text: String,
+    ): Boolean =
+        tree.lineSequence().any { line ->
+            "text=$text" in line ||
+                "desc=$text" in line
+        }
+
+    private fun goalRequestsPhotoCapture(lowerGoal: String): Boolean =
+        listOf(
+            "take a picture",
+            "take picture",
+            "take a photo",
+            "take photo",
+            "capture a photo",
+            "capture photo",
+            "snap a photo",
+            "press the shutter",
+            "press shutter",
+            "shutter",
+            "사진 찍",
+            "사진을 찍",
+            "사진 촬영",
+            "촬영",
+        ).any { it in lowerGoal }
+
+    private fun goalRequestsBooking(lowerGoal: String): Boolean =
+        listOf(
+            "book",
+            "booking",
+            "reserve",
+            "reservation",
+            "order",
+            "checkout",
+            "예매",
+            "예약",
+            "주문",
+        ).any { it in lowerGoal }
+
     private fun extractSearchQuery(goal: String): String? {
         val searchMatch = Regex("(?i)search(?:\\s+for)?\\s+(.+)$").find(goal)?.groupValues?.getOrNull(1)
         if (!searchMatch.isNullOrBlank()) return cleanExtractedSearchQuery(searchMatch)
@@ -1607,10 +2585,54 @@ class OpenRouterLocalAgentRuntime(
         return koreanMatch?.let(::cleanExtractedSearchQuery)
     }
 
+    private fun extractPlayStoreInstallQuery(goal: String): String? {
+        Regex("(?i)\\b(?:install|download)\\b").findAll(goal).lastOrNull()?.let { match ->
+            cleanExtractedPlayStoreQuery(goal.substring(match.range.last + 1))?.let { return it }
+        }
+        Regex("(?:설치|다운로드)").findAll(goal).lastOrNull()?.let { match ->
+            cleanExtractedPlayStoreQuery(goal.substring(match.range.last + 1))?.let { return it }
+        }
+        val patterns = listOf(
+            Regex("(?i)install\\s+(.+?)(?:\\s+(?:from|in|on)\\s+(?:google\\s+play|play\\s+store).*)?$"),
+            Regex("(?i)download\\s+(.+?)(?:\\s+(?:from|in|on)\\s+(?:google\\s+play|play\\s+store).*)?$"),
+            Regex("(?i)(?:google\\s+play|play\\s+store).*?(?:install|download)\\s+(.+)$"),
+            Regex("(.+?)(?:을|를)?\\s*(?:플레이\\s*스토어|구글\\s*플레이).*?(?:설치|다운로드)"),
+            Regex("(?:설치|다운로드)\\s+(.+?)(?:\\s*(?:플레이\\s*스토어|구글\\s*플레이).*)?$"),
+        )
+        return patterns
+            .asSequence()
+            .mapNotNull { regex ->
+                regex.find(goal)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                    ?.let(::cleanExtractedPlayStoreQuery)
+            }
+            .firstOrNull()
+    }
+
+    private fun cleanExtractedPlayStoreQuery(value: String): String? =
+        value
+            .trim()
+            .trim('"', '\'')
+            .replace(Regex("(?i)\\b(app|application)\\b"), "")
+            .replace(Regex("(?i)\\s+(then|and|but|without|stop)\\b.*$"), "")
+            .replace(Regex("(?i)\\s+(from|in|on)\\s+(google\\s+play|play\\s+store).*$"), "")
+            .replace(Regex("\\s*(앱|어플|애플리케이션)$"), "")
+            .trimEnd('.', '?', '!', '。')
+            .trim()
+            .takeIf { it.isNotBlank() }
+
+    private fun playStoreSearchQueryFor(query: String): String =
+        PLAY_STORE_SEARCH_QUERY_ALIASES[query.trim().lowercase()] ?: query.trim()
+
+    private fun playStoreDirectPackageFor(query: String): String? =
+        PLAY_STORE_DIRECT_PACKAGE_ALIASES[query.trim().lowercase()]
+
     private fun cleanExtractedSearchQuery(value: String): String? =
         value
             .trim()
             .trim('"', '\'')
+            .replace(Regex("(?i)\\s+(read only|do not|don't|but|without)\\b.*$"), "")
             .trimEnd('.', '?', '!', '。')
             .trim()
             .takeIf { it.isNotBlank() }
@@ -1655,7 +2677,11 @@ class OpenRouterLocalAgentRuntime(
     private fun jsonArrayToStrings(array: JSONArray): List<String> =
         buildList {
             for (index in 0 until array.length()) {
-                add(array.getString(index))
+                when (val value = array.opt(index)) {
+                    is String -> value
+                    is JSONObject -> value.optString("packageName")
+                    else -> null
+                }?.takeIf { it.isNotBlank() }?.let(::add)
             }
         }
 
@@ -1681,7 +2707,7 @@ class OpenRouterLocalAgentRuntime(
         require(hasValue) { "Selector must include at least one identifying field." }
     }
 
-    private companion object {
+    internal companion object {
         const val SYSTEM_INSTRUCTION: String =
             "You are an Android accessibility planning engine. " +
                 "Analyze the current visible UI first, then plan. " +
@@ -1692,6 +2718,7 @@ class OpenRouterLocalAgentRuntime(
                 "appMemory contains prior success/failure notes for the target app; use it to avoid repeating failed selectors/packages, but current visibleNodes are still the source of truth. " +
                 "appSkillGuidance contains advisory app-use procedures and learned skill notes; use it to choose selectors and recovery strategy, but current visibleNodes are source of truth. " +
                 "Never execute a skill directly; always emit strict JSON DSL actions only. " +
+                "PDF skill aliases map to DSL only: snapshotScreen/read screen means use visibleNodes; findElement means create a selector; clickElement means tap; fillField means clear_text then input_text; scrollView means scroll; getText means observe visibleNodes/assert_visible; takeScreenshot is QA-only and not a runtime action; replayScript is not supported in runtime plans. " +
                 "Do not emit a long end-to-end script. Return only the next small horizon of steps from the current screen, at most stepBudget steps unless confirm_user must be followed by its guarded action. " +
                 "When the current screen already shows progress in the flow, continue from that point instead of restarting from the top. " +
                 "Emit stop when the current screen already satisfies the goal or the next safe checkpoint. " +
@@ -1699,12 +2726,15 @@ class OpenRouterLocalAgentRuntime(
                 "If you use press_global, action must be one of BACK,HOME,RECENTS,NOTIFICATIONS,QUICK_SETTINGS. " +
                 "Do not use HOME,RECENTS,NOTIFICATIONS,QUICK_SETTINGS unless the user explicitly requested that system surface. " +
                 "Every tap,input_text,submit_input,clear_text,wait_for_node,assert_visible step must include a non-empty selector object. " +
+                "Visible nodes may include ref=@eN, r=role, idx=0.1, and b=left,top,right,bottom; ref is for reasoning only, idx maps to selector.indexPath, and b maps to selector.boundsHint when stable text/contentDescription/resourceId is unavailable. " +
                 "If the goal is to search in Chrome, use selector resourceId com.android.chrome:id/url_bar for input_text and submit_input, and use the exact query from the goal text. " +
                 "If the goal is to open Bluetooth settings in Samsung Settings package com.android.settings, tap contentDescription 설정 검색 first, type Bluetooth into com.android.settings.intelligence:id/search_src_text, then tap the Bluetooth result. " +
                 "If the goal is to search in Samsung Settings package com.android.settings, tap contentDescription 설정 검색 first, then wait for and type into com.android.settings.intelligence:id/search_src_text. " +
                 "If the goal is to enter the Alarm tab in Samsung Clock package com.sec.android.app.clockpackage, use selector text 알람 with resourceId com.sec.android.app.clockpackage:id/title for the tab, then assert com.sec.android.app.clockpackage:id/alarm_main_layout. " +
                 "If the goal is to search in Samsung Contacts package com.samsung.android.app.contacts, tap com.samsung.android.app.contacts:id/menu_search before waiting for or typing into com.samsung.android.app.contacts:id/search_src_text. " +
+                "If the goal is to open Samsung Camera package com.sec.android.app.camera, launch_app com.sec.android.app.camera, wait_for_app com.sec.android.app.camera, then stop; do not wait for com.sec.android.app.camera:id/camera_viewfinder. Use com.sec.android.app.camera:id/camera_preview only as visible preview evidence when it appears. If the goal is to take a photo, require confirm_user before tapping shutter selector resourceId com.sec.android.app.camera:id/normal_center_button with contentDescription 사진 촬영. " +
+                "If the goal is to install or download an app through Google Play Store package com.android.vending, use the appSkillGuidance Play Store procedure: open Search/검색, type the requested app name into the editable search field, submit, then require confirm_user before tapping 설치 or Install. Stop before payment, login, account, or permission prompts. " +
                 "If the goal is to send a message in Samsung Messages package com.samsung.android.messaging, tap com.samsung.android.messaging:id/fab, then tap com.samsung.android.messaging:id/chat_fab, type the recipient into com.samsung.android.messaging:id/search_src_text, tap com.samsung.android.messaging:id/chat_with_button, use com.samsung.android.messaging:id/message_edit_text for message body, then require confirm_user before com.samsung.android.messaging:id/send_button. " +
-                "Dangerous actions such as send,pay,delete,post,share,install,permission must require confirm_user."
+                "Dangerous actions such as send,pay,delete,post,share,install,permission,take photo,press shutter,book,reserve,order,checkout,예매,예약,주문 must require confirm_user."
     }
 }

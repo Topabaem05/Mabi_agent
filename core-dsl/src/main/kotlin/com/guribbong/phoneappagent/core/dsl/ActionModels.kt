@@ -77,6 +77,11 @@ enum class GlobalActionType {
 sealed interface AgentAction {
     data class LaunchApp(val packageName: String) : AgentAction
 
+    data class OpenUri(
+        val uri: String,
+        val packageName: String? = null,
+    ) : AgentAction
+
     data class WaitForApp(
         val packageName: String,
         val timeoutMs: Long = 5_000L,
@@ -116,6 +121,7 @@ sealed interface AgentAction {
 fun AgentAction.historyKey(): String =
     when (this) {
         is AgentAction.LaunchApp -> "launch_app:$packageName"
+        is AgentAction.OpenUri -> "open_uri:$uri|package=${packageName.orEmpty()}"
         is AgentAction.WaitForApp -> "wait_for_app:$packageName"
         is AgentAction.WaitForNode -> "wait_for_node:${selector.historyKey()}"
         is AgentAction.Tap -> "tap:${selector.historyKey()}"

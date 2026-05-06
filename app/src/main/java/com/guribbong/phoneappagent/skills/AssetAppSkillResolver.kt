@@ -65,6 +65,7 @@ private fun JSONArray.toProcedureList(): List<AppSkillProcedure> =
             name = item.getString("name"),
             goalPatterns = item.optJSONArray("goalPatterns")?.toStringList().orEmpty(),
             riskPoints = item.optJSONArray("riskPoints")?.toStringList().orEmpty(),
+            queryAliases = item.optJSONObject("queryAliases")?.toStringMap().orEmpty(),
             steps = item.getJSONArray("steps").toStepList(),
         )
     }
@@ -97,6 +98,15 @@ private fun JSONArray.toSelectorList(): List<SkillSelectorHint> =
 
 private fun JSONArray.toStringList(): List<String> =
     (0 until length()).mapNotNull { index -> optString(index).takeIf { it.isNotBlank() } }
+
+private fun JSONObject.toStringMap(): Map<String, String> =
+    keys().asSequence()
+        .mapNotNull { key ->
+            optString(key)
+                .takeIf { it.isNotBlank() }
+                ?.let { value -> key to value }
+        }
+        .toMap()
 
 private fun JSONObject.optNullableString(name: String): String? =
     optString(name).takeIf { it.isNotBlank() }
