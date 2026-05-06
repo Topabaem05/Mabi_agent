@@ -23,6 +23,7 @@ data class AppSkillProcedure(
     val goalPatterns: List<String>,
     val steps: List<AppSkillStepHint>,
     val riskPoints: List<String> = emptyList(),
+    val queryAliases: Map<String, String> = emptyMap(),
 )
 
 data class AppSkillContext(
@@ -37,6 +38,10 @@ data class AppSkillContext(
             procedures.forEach { procedure ->
                 append("\nprocedure=").append(procedure.name)
                 append(" patterns=").append(procedure.goalPatterns.joinToString("|"))
+                if (procedure.queryAliases.isNotEmpty()) {
+                    append(" queryAliases=")
+                    append(procedure.queryAliases.entries.joinToString("|") { "${it.key}->${it.value}" })
+                }
                 procedure.steps.forEachIndexed { index, step ->
                     append("\n step[").append(index).append("]=").append(step.intent)
                     append(" expect=").append(step.expectedObservation)

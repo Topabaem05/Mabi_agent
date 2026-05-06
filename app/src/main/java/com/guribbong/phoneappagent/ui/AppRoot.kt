@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -37,6 +38,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.History
@@ -48,10 +50,12 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.BottomSheetScaffold
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -60,10 +64,13 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberBottomSheetScaffoldState
 import androidx.compose.material3.rememberDrawerState
+import androidx.compose.material3.rememberStandardBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -95,6 +102,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -111,6 +119,9 @@ import com.kyant.backdrop.effects.vibrancy
 import com.guribbong.phoneappagent.core.dsl.AgentAction
 import com.guribbong.phoneappagent.core.runner.ExecutionStep
 import com.guribbong.phoneappagent.data.history.ChatSessionSummary
+import com.guribbong.phoneappagent.data.history.ChatTranscript
+import com.guribbong.phoneappagent.data.history.ChatTranscriptMessage
+import com.guribbong.phoneappagent.data.history.ChatTranscriptRole
 import com.guribbong.phoneappagent.overlay.ActiveAgentBadge
 import kotlinx.coroutines.launch
 import kotlin.math.PI
@@ -158,15 +169,32 @@ fun AppRoot(
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
-            ClaudeHistoryDrawer(sessions = state.sessions)
+            MabiHistoryDrawer(
+                sessions = state.sessions,
+                onSessionClick = { sessionId ->
+                    viewModel.openSession(sessionId)
+                    scope.launch { drawerState.close() }
+                },
+            )
         },
     ) {
         Scaffold(containerColor = FigmaBackground) { innerPadding ->
             FigmaChatHome(
                 modifier = Modifier.padding(innerPadding),
                 text = state.composer,
+                showRiskProcessPopup = state.showRiskProcessPopup,
+                policyReason = state.policyReason,
+                riskOptionUiModel = state.riskOptionUiModel,
+                canConfirm = state.canConfirm,
+                canStop = state.canStop,
+                selectedTranscript = state.selectedTranscript,
                 onValueChange = viewModel::onComposerChanged,
                 onQueueTask = viewModel::queueTask,
+                onConfirm = viewModel::confirmExecution,
+                onStop = viewModel::stopExecution,
+                onRiskFollowUp = viewModel::runRiskFollowUp,
+                onRiskRefinement = viewModel::runRiskRefinement,
+                onCloseTranscript = viewModel::closeSession,
                 onDrawerClick = { scope.launch { drawerState.open() } },
             )
         }
@@ -177,8 +205,19 @@ fun AppRoot(
 @Composable
 private fun FigmaChatHome(
     text: String,
+    showRiskProcessPopup: Boolean,
+    policyReason: String,
+    riskOptionUiModel: RiskOptionUiModel,
+    canConfirm: Boolean,
+    canStop: Boolean,
+    selectedTranscript: ChatTranscript?,
     onValueChange: (String) -> Unit,
     onQueueTask: () -> Unit,
+    onConfirm: () -> Unit,
+    onStop: () -> Unit,
+    onRiskFollowUp: (String) -> Unit,
+    onRiskRefinement: (String) -> Unit,
+    onCloseTranscript: () -> Unit,
     onDrawerClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -292,16 +331,683 @@ private fun FigmaChatHome(
                     chatBarBounds = coordinates.boundsInRoot()
                 },
         )
+        if (showRiskProcessPopup) {
+            RiskOptionPopup(
+                model = riskOptionUiModel,
+                fallbackReason = policyReason,
+                canProceed = canConfirm,
+                canStop = canStop,
+                onProceed = onConfirm,
+                onStop = onStop,
+                onFollowUp = onRiskFollowUp,
+                onRefinement = onRiskRefinement,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        selectedTranscript?.let { transcript ->
+            MabiTranscriptScreen(
+                transcript = transcript,
+                composerText = text,
+                onValueChange = onValueChange,
+                onQueueTask = onQueueTask,
+                onBack = onCloseTranscript,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RiskOptionPopup(
+    model: RiskOptionUiModel,
+    fallbackReason: String,
+    canProceed: Boolean,
+    canStop: Boolean,
+    onProceed: () -> Unit,
+    onStop: () -> Unit,
+    onFollowUp: (String) -> Unit,
+    onRefinement: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var refinementOpen by remember(model.title) { mutableStateOf(false) }
+    var refinementText by remember(model.title) { mutableStateOf("") }
+    val sheetState = rememberStandardBottomSheetState(
+        initialValue = SheetValue.PartiallyExpanded,
+        skipHiddenState = true,
+    )
+    val scaffoldState = rememberBottomSheetScaffoldState(bottomSheetState = sheetState)
+
+    BottomSheetScaffold(
+        scaffoldState = scaffoldState,
+        sheetPeekHeight = 430.dp,
+        sheetShape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
+        sheetContainerColor = Color.White,
+        sheetContentColor = Color.Black,
+        sheetShadowElevation = 18.dp,
+        sheetDragHandle = { RiskSheetDragHandle() },
+        sheetContent = {
+            RiskConfirmationSheetContent(
+                model = model,
+                fallbackReason = fallbackReason,
+                refinementOpen = refinementOpen,
+                refinementText = refinementText,
+                canProceed = canProceed,
+                canStop = canStop,
+                onRefinementTextChange = { refinementText = it },
+                onOptionSelected = { option ->
+                    when (option.action) {
+                        RiskOptionAction.FOLLOW_UP -> option.followUpPrompt?.let(onFollowUp)
+                        RiskOptionAction.PROCEED -> if (canProceed) onProceed()
+                        RiskOptionAction.REFINE -> refinementOpen = true
+                        RiskOptionAction.STOP -> if (canStop) onStop()
+                    }
+                },
+                onSendRefinement = {
+                    if (refinementText.isNotBlank()) {
+                        onRefinement(refinementText)
+                    }
+                },
+            )
+        },
+        containerColor = Color.Transparent,
+        modifier = modifier
+            .background(Color.Black.copy(alpha = 0.36f)),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.24f)),
+        )
     }
 }
 
 @Composable
-private fun ClaudeHistoryDrawer(sessions: List<ChatSessionSummary>) {
+private fun RiskSheetDragHandle() {
+    Box(
+        modifier = Modifier
+            .padding(top = 12.dp, bottom = 8.dp)
+            .width(54.dp)
+            .height(5.dp)
+            .clip(RoundedCornerShape(100.dp))
+            .background(Color.Black),
+    )
+}
+
+@Composable
+private fun RiskConfirmationSheetContent(
+    model: RiskOptionUiModel,
+    fallbackReason: String,
+    refinementOpen: Boolean,
+    refinementText: String,
+    canProceed: Boolean,
+    canStop: Boolean,
+    onRefinementTextChange: (String) -> Unit,
+    onOptionSelected: (RiskOptionItem) -> Unit,
+    onSendRefinement: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 430.dp, max = 720.dp)
+            .verticalScroll(rememberScrollState())
+            .padding(start = 20.dp, end = 20.dp, bottom = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (refinementOpen) {
+            RiskSheetRefinementContent(
+                model = model,
+                refinementText = refinementText,
+                onRefinementTextChange = onRefinementTextChange,
+                onSendRefinement = onSendRefinement,
+            )
+        } else {
+            val primaryOptions = model.options
+                .filter { it.action == RiskOptionAction.FOLLOW_UP || it.action == RiskOptionAction.PROCEED }
+                .take(2)
+                .ifEmpty { model.options.take(2) }
+            val secondaryOptions = model.options.filterNot { primaryOptions.contains(it) }
+            RiskSheetHeader(model = model)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                primaryOptions.forEachIndexed { index, option ->
+                    val enabled = option.action != RiskOptionAction.PROCEED || canProceed
+                    RiskOptionCard(
+                        option = option,
+                        index = index,
+                        enabled = enabled,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onOptionSelected(option) },
+                    )
+                }
+            }
+            if (secondaryOptions.isNotEmpty()) {
+                RiskConditionSection(
+                    model = model,
+                    options = secondaryOptions,
+                    optionIndexStart = primaryOptions.size,
+                    canStop = canStop,
+                    onOptionSelected = onOptionSelected,
+                )
+            }
+            RiskExpandHint()
+            RiskSheetProcessDetails(
+                model = model,
+                fallbackReason = fallbackReason,
+            )
+        }
+    }
+}
+
+@Composable
+private fun RiskSheetHeader(model: RiskOptionUiModel) {
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Text(
+            text = "사용자 확인 필요",
+            modifier = Modifier
+                .clip(RoundedCornerShape(100.dp))
+                .background(TossBlue.copy(alpha = 0.12f))
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+            color = TossBlue,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.sp,
+        )
+        Text(
+            text = "계속 진행할까요?",
+            color = Color.Black,
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.sp,
+        )
+        Text(
+            text = model.sheetTitle,
+            color = Color.Black,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.sp,
+        )
+        Text(
+            text = model.sheetSubtitle,
+            color = Color.Black.copy(alpha = 0.58f),
+            fontSize = 15.sp,
+            lineHeight = 20.sp,
+            letterSpacing = 0.sp,
+        )
+    }
+}
+
+@Composable
+private fun RiskExpandHint() {
+    Text(
+        text = "위로 올리면 진행 과정을 자세히 볼 수 있어요.",
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.Black.copy(alpha = 0.04f))
+            .padding(horizontal = 12.dp, vertical = 9.dp),
+        color = Color.Black.copy(alpha = 0.52f),
+        fontSize = 12.sp,
+        letterSpacing = 0.sp,
+    )
+}
+
+@Composable
+private fun RiskConditionSection(
+    model: RiskOptionUiModel,
+    options: List<RiskOptionItem>,
+    optionIndexStart: Int,
+    canStop: Boolean,
+    onOptionSelected: (RiskOptionItem) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color(0xFFF7F8FA))
+            .border(1.dp, Color.Black.copy(alpha = 0.06f), RoundedCornerShape(20.dp))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(26.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFFE5E8ED)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "${optionIndexStart + 1}",
+                    color = Color.Black.copy(alpha = 0.62f),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.sp,
+                )
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = model.refinementTitle,
+                    color = Color.Black,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.sp,
+                )
+                Text(
+                    text = "조건을 바꾸거나 다른 답변을 요청할 수 있어요.",
+                    color = Color.Black.copy(alpha = 0.56f),
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    letterSpacing = 0.sp,
+                )
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.forEach { option ->
+                val enabled = option.action != RiskOptionAction.STOP || canStop
+                Text(
+                    text = option.title,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(100.dp))
+                        .background(Color.White)
+                        .border(1.dp, Color.Black.copy(alpha = 0.08f), RoundedCornerShape(100.dp))
+                        .clickable(enabled = enabled) { onOptionSelected(option) }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    color = Color.Black.copy(alpha = if (enabled) 0.68f else 0.34f),
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    letterSpacing = 0.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RiskSheetProcessDetails(
+    model: RiskOptionUiModel,
+    fallbackReason: String,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color(0xFFF8F9FB))
+            .border(1.dp, Color.Black.copy(alpha = 0.06f), RoundedCornerShape(20.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                text = model.progressEyebrow,
+                color = Color.Black,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.sp,
+            )
+            Text(
+                text = model.description.ifBlank { fallbackReason },
+                color = Color.Black.copy(alpha = 0.58f),
+                fontSize = 13.sp,
+                lineHeight = 18.sp,
+                letterSpacing = 0.sp,
+            )
+        }
+        RiskSheetProgressRail(
+            steps = model.progressSteps,
+            activeIndex = model.activeProgressIndex,
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
+            model.statusRows.forEachIndexed { index, row ->
+                RiskSheetStatusRow(row = row)
+                if (index != model.statusRows.lastIndex) {
+                    Box(
+                        modifier = Modifier
+                            .padding(start = 40.dp)
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(Color.Black.copy(alpha = 0.06f)),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RiskSheetProgressRail(
+    steps: List<String>,
+    activeIndex: Int,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+    ) {
+        steps.take(3).forEachIndexed { index, label ->
+            val done = index < activeIndex
+            val active = index == activeIndex
+            Column(
+                modifier = Modifier.weight(1f),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(if (active) 32.dp else 28.dp)
+                        .clip(CircleShape)
+                        .background(
+                            when {
+                                done || active -> RiskBlue
+                                else -> Color(0xFFE5E8ED)
+                            },
+                        )
+                        .then(
+                            if (active) Modifier.border(2.dp, Color.White, CircleShape) else Modifier,
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = if (done) "✓" else "${index + 1}",
+                        color = if (done || active) Color.White else Color.Black.copy(alpha = 0.58f),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.sp,
+                    )
+                }
+                Text(
+                    text = label,
+                    color = if (active) RiskBlue else Color.Black.copy(alpha = 0.62f),
+                    fontSize = 11.sp,
+                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    letterSpacing = 0.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RiskSheetStatusRow(row: RiskProgressRow) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(if (row.state == RiskProgressState.DONE) RiskBlue else Color.Transparent)
+                .border(
+                    width = if (row.state == RiskProgressState.DONE) 0.dp else 2.dp,
+                    color = if (row.state == RiskProgressState.ACTIVE) RiskBlue else Color.Black.copy(alpha = 0.2f),
+                    shape = CircleShape,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (row.state == RiskProgressState.DONE) {
+                Text(
+                    text = "✓",
+                    color = Color.White,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.sp,
+                )
+            }
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = row.title,
+                color = Color.Black,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                letterSpacing = 0.sp,
+            )
+            Text(
+                text = row.detail,
+                color = Color.Black.copy(alpha = 0.56f),
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                letterSpacing = 0.sp,
+            )
+        }
+        Text(
+            text = when (row.state) {
+                RiskProgressState.DONE -> "완료"
+                RiskProgressState.ACTIVE -> "진행 중"
+                RiskProgressState.WAITING -> "대기"
+            },
+            modifier = Modifier
+                .clip(RoundedCornerShape(100.dp))
+                .background(
+                    when (row.state) {
+                        RiskProgressState.DONE -> Color(0xFFE7F7EC)
+                        RiskProgressState.ACTIVE -> RiskBlue.copy(alpha = 0.12f)
+                        RiskProgressState.WAITING -> Color.Black.copy(alpha = 0.05f)
+                    },
+                )
+                .padding(horizontal = 8.dp, vertical = 5.dp),
+            color = when (row.state) {
+                RiskProgressState.DONE -> Color(0xFF248B45)
+                RiskProgressState.ACTIVE -> RiskBlue
+                RiskProgressState.WAITING -> Color.Black.copy(alpha = 0.58f)
+            },
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.sp,
+        )
+    }
+}
+
+@Composable
+private fun RiskOptionCard(
+    option: RiskOptionItem,
+    index: Int,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val emphasized = option.action == RiskOptionAction.PROCEED
+    val recommended = option.badge != null
+    Column(
+        modifier = modifier
+            .height(126.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(if (emphasized) TossBlue.copy(alpha = 0.08f) else Color.White)
+            .border(
+                width = if (emphasized) 1.5.dp else 1.dp,
+                color = if (emphasized) TossBlue else Color.Black.copy(alpha = 0.1f),
+                shape = RoundedCornerShape(18.dp),
+            )
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(10.dp),
+        horizontalAlignment = Alignment.Start,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(30.dp)
+                .clip(CircleShape)
+                .background(if (emphasized) TossBlue else Color(0xFFE5E8ED)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = "${index + 1}",
+                color = if (emphasized) Color.White else Color.Black.copy(alpha = 0.62f),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.sp,
+            )
+        }
+        Spacer(modifier = Modifier.weight(1f))
+        Text(
+            text = option.title,
+            color = if (enabled) Color.Black else Color.Black.copy(alpha = 0.38f),
+            fontSize = 16.sp,
+            lineHeight = 19.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            letterSpacing = 0.sp,
+        )
+        Text(
+            text = option.subtitle,
+            color = Color.Black.copy(alpha = if (enabled) 0.58f else 0.32f),
+            fontSize = 11.sp,
+            lineHeight = 14.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            letterSpacing = 0.sp,
+        )
+        option.badge?.let { badge ->
+            Text(
+                text = badge,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(100.dp))
+                    .background(TossBlue.copy(alpha = 0.14f))
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                color = TossBlue,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun RiskSheetRefinementContent(
+    model: RiskOptionUiModel,
+    refinementText: String,
+    onRefinementTextChange: (String) -> Unit,
+    onSendRefinement: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            text = model.refinementTitle,
+            color = Color.Black,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.sp,
+        )
+        Text(
+            text = "원하는 조건을 입력하면 이 조건으로 다시 진행할게요.",
+            color = Color.Black.copy(alpha = 0.58f),
+            fontSize = 15.sp,
+            lineHeight = 20.sp,
+            letterSpacing = 0.sp,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            Text(
+                text = refinementText.ifBlank { model.refinementPlaceholder },
+                modifier = Modifier
+                    .widthIn(max = 260.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(RiskBlue.copy(alpha = if (refinementText.isBlank()) 0.08f else 1f))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                color = if (refinementText.isBlank()) Color.Black.copy(alpha = 0.38f) else Color.White,
+                fontSize = 15.sp,
+                lineHeight = 20.sp,
+                letterSpacing = 0.sp,
+            )
+        }
+        BasicTextField(
+            value = refinementText,
+            onValueChange = onRefinementTextChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(54.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(Color.Black.copy(alpha = 0.04f))
+                .border(1.dp, Color.Black.copy(alpha = 0.08f), RoundedCornerShape(18.dp))
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            singleLine = true,
+            textStyle = TextStyle(
+                color = Color.Black,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.sp,
+            ),
+            cursorBrush = SolidColor(RiskBlue),
+            decorationBox = { innerTextField ->
+                Box(contentAlignment = Alignment.CenterStart) {
+                    if (refinementText.isEmpty()) {
+                        Text(
+                            text = model.refinementPlaceholder,
+                            color = Color.Black.copy(alpha = 0.34f),
+                            fontSize = 16.sp,
+                            letterSpacing = 0.sp,
+                        )
+                    }
+                    innerTextField()
+                }
+            },
+        )
+        Button(
+            onClick = onSendRefinement,
+            enabled = refinementText.isNotBlank(),
+            modifier = Modifier
+                .align(Alignment.End)
+                .height(48.dp),
+            shape = RoundedCornerShape(18.dp),
+        ) {
+            Text("다시 찾기")
+        }
+    }
+}
+
+@Composable
+private fun WaveBadge() {
+    Canvas(
+        modifier = Modifier
+            .size(42.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = 0.1f))
+            .padding(10.dp),
+    ) {
+        val bars = listOf(0.36f, 0.68f, 0.48f, 0.78f, 0.42f)
+        val gap = size.width / 8f
+        val stroke = size.width / 9f
+        bars.forEachIndexed { index, heightFraction ->
+            val x = gap * (index + 2)
+            val barHeight = size.height * heightFraction
+            drawRoundRect(
+                color = RiskBlue,
+                topLeft = androidx.compose.ui.geometry.Offset(x - stroke / 2f, (size.height - barHeight) / 2f),
+                size = androidx.compose.ui.geometry.Size(stroke, barHeight),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(stroke, stroke),
+            )
+        }
+    }
+}
+
+@Composable
+private fun MabiHistoryDrawer(
+    sessions: List<ChatSessionSummary>,
+    onSessionClick: (Long) -> Unit,
+) {
     ModalDrawerSheet(
         modifier = Modifier
             .fillMaxHeight()
             .width(338.dp),
-        drawerContainerColor = FigmaBackground,
+        drawerContainerColor = TossSurface,
         drawerContentColor = Color.Black,
     ) {
         Column(
@@ -312,9 +1018,10 @@ private fun ClaudeHistoryDrawer(sessions: List<ChatSessionSummary>) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(44.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(Color.Black.copy(alpha = 0.04f))
+                    .height(52.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color.White)
+                    .border(1.dp, TossDivider, RoundedCornerShape(16.dp))
                     .padding(horizontal = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -327,18 +1034,18 @@ private fun ClaudeHistoryDrawer(sessions: List<ChatSessionSummary>) {
                 )
                 Spacer(modifier = Modifier.weight(1f))
                 Text(
-                    text = "+",
-                    color = Color.Black,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Normal,
+                    text = "History",
+                    color = TossMuted,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
                     letterSpacing = 0.sp,
                 )
             }
             Spacer(modifier = Modifier.height(18.dp))
             Text(
-                text = "Chats",
+                text = "Conversations",
                 modifier = Modifier.padding(horizontal = 10.dp),
-                color = FigmaHistoryMuted,
+                color = TossMuted,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
                 letterSpacing = 0.sp,
@@ -349,7 +1056,10 @@ private fun ClaudeHistoryDrawer(sessions: List<ChatSessionSummary>) {
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 items(sessions, key = { it.id }) { session ->
-                    ClaudeHistoryRow(session = session)
+                    MabiHistoryRow(
+                        session = session,
+                        onClick = { onSessionClick(session.id) },
+                    )
                 }
             }
         }
@@ -357,40 +1067,285 @@ private fun ClaudeHistoryDrawer(sessions: List<ChatSessionSummary>) {
 }
 
 @Composable
-private fun ClaudeHistoryRow(session: ChatSessionSummary) {
-    Column(
+private fun MabiHistoryRow(
+    session: ChatSessionSummary,
+    onClick: () -> Unit,
+) {
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .clickable { }
-            .padding(horizontal = 10.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(3.dp),
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(CircleShape)
+                .background(TossBlue.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.History,
+                contentDescription = null,
+                tint = TossBlue,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        Spacer(modifier = Modifier.width(10.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(
+                text = session.title,
+                color = Color.Black.copy(alpha = 0.86f),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                letterSpacing = 0.sp,
+            )
+            Text(
+                text = "${session.appName} · ${session.status}",
+                color = TossMuted,
+                fontSize = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                letterSpacing = 0.sp,
+            )
+            Text(
+                text = session.updatedLabel,
+                color = TossMuted.copy(alpha = 0.82f),
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                letterSpacing = 0.sp,
+            )
+        }
         Text(
-            text = session.title,
-            color = Color.Black.copy(alpha = 0.82f),
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+            text = "›",
+            color = TossMuted.copy(alpha = 0.8f),
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Light,
             letterSpacing = 0.sp,
         )
-        Text(
-            text = "${session.appName} · ${session.status}",
-            color = FigmaHistoryMuted,
-            fontSize = 13.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            letterSpacing = 0.sp,
+    }
+}
+
+@Composable
+private fun MabiTranscriptScreen(
+    transcript: ChatTranscript,
+    composerText: String,
+    onValueChange: (String) -> Unit,
+    onQueueTask: () -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .background(TossSurface)
+            .padding(top = 42.dp),
+    ) {
+        MabiTranscriptTopBar(
+            transcript = transcript,
+            onBack = onBack,
         )
-        Text(
-            text = session.updatedLabel,
-            color = FigmaHistoryMuted.copy(alpha = 0.8f),
-            fontSize = 12.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            letterSpacing = 0.sp,
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            items(transcript.messages) { message ->
+                MabiTranscriptBubble(message = message)
+            }
+            item {
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+        }
+        MabiTranscriptComposer(
+            text = composerText,
+            onValueChange = onValueChange,
+            onQueueTask = onQueueTask,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(TossDark)
+                .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 18.dp),
         )
+    }
+}
+
+@Composable
+private fun MabiTranscriptTopBar(
+    transcript: ChatTranscript,
+    onBack: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+            .height(58.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                contentDescription = "Back",
+                tint = Color.Black,
+            )
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = transcript.title,
+                color = Color.Black,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                letterSpacing = 0.sp,
+            )
+            Text(
+                text = "${transcript.appName} · ${transcript.status} · ${transcript.updatedLabel}",
+                color = TossMuted,
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                letterSpacing = 0.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MabiTranscriptBubble(message: ChatTranscriptMessage) {
+    val isUser = message.role == ChatTranscriptRole.USER
+    val isStatus = message.role == ChatTranscriptRole.STATUS
+    val bubbleColor = when (message.role) {
+        ChatTranscriptRole.USER -> TossBlue
+        ChatTranscriptRole.AGENT -> Color.White
+        ChatTranscriptRole.THOUGHT -> TossThought
+        ChatTranscriptRole.STATUS -> Color.Transparent
+    }
+    val textColor = if (isUser) Color.White else Color.Black.copy(alpha = 0.86f)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = when {
+            isUser -> Arrangement.End
+            isStatus -> Arrangement.Center
+            else -> Arrangement.Start
+        },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(if (isStatus) 0.92f else 0.82f)
+                .clip(RoundedCornerShape(if (isStatus) 12.dp else 18.dp))
+                .background(bubbleColor)
+                .then(
+                    if (message.role == ChatTranscriptRole.AGENT) {
+                        Modifier.border(1.dp, TossDivider, RoundedCornerShape(18.dp))
+                    } else {
+                        Modifier
+                    },
+                )
+                .padding(horizontal = if (isStatus) 10.dp else 14.dp, vertical = if (isStatus) 8.dp else 11.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalAlignment = if (isStatus) Alignment.CenterHorizontally else Alignment.Start,
+        ) {
+            Text(
+                text = message.title,
+                color = if (isStatus) TossMuted else textColor.copy(alpha = if (isUser) 0.9f else 0.68f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = if (isStatus) TextAlign.Center else TextAlign.Start,
+                letterSpacing = 0.sp,
+            )
+            Text(
+                text = message.body,
+                color = if (isStatus) TossMuted else textColor,
+                fontSize = if (message.role == ChatTranscriptRole.THOUGHT) 13.sp else 15.sp,
+                lineHeight = if (message.role == ChatTranscriptRole.THOUGHT) 18.sp else 20.sp,
+                textAlign = if (isStatus) TextAlign.Center else TextAlign.Start,
+                letterSpacing = 0.sp,
+            )
+            message.meta?.takeIf { it.isNotBlank() }?.let { meta ->
+                Text(
+                    text = meta,
+                    color = if (isUser) Color.White.copy(alpha = 0.72f) else TossMuted,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    letterSpacing = 0.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MabiTranscriptComposer(
+    text: String,
+    onValueChange: (String) -> Unit,
+    onQueueTask: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        BasicTextField(
+            value = text,
+            onValueChange = onValueChange,
+            modifier = Modifier
+                .weight(1f)
+                .height(48.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color.White)
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+            singleLine = true,
+            textStyle = TextStyle(
+                color = Color.Black,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.sp,
+            ),
+            cursorBrush = SolidColor(TossBlue),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardActions = KeyboardActions(
+                onSend = {
+                    if (text.isNotBlank()) onQueueTask()
+                },
+            ),
+            decorationBox = { innerTextField ->
+                Box(contentAlignment = Alignment.CenterStart) {
+                    if (text.isEmpty()) {
+                        Text(
+                            text = "새 명령 입력",
+                            color = TossMuted,
+                            fontSize = 16.sp,
+                            letterSpacing = 0.sp,
+                        )
+                    }
+                    innerTextField()
+                }
+            },
+        )
+        Button(
+            onClick = onQueueTask,
+            enabled = text.isNotBlank(),
+            modifier = Modifier.size(48.dp),
+            shape = RoundedCornerShape(12.dp),
+        ) {
+            Text("+", fontSize = 22.sp, lineHeight = 22.sp, letterSpacing = 0.sp)
+        }
     }
 }
 
@@ -603,6 +1558,13 @@ private val FigmaGlassBorder = Color(0xFFE9E9E9)
 private val FigmaPlaceholder = Color(0xFF8B8B8B)
 private val FigmaCompactPlaceholder = Color(0xFF636363)
 private val FigmaHistoryMuted = Color(0xFF6F6B64)
+private val RiskBlue = Color(0xFF477EF3)
+private val TossBlue = Color(0xFF3081FB)
+private val TossSurface = Color(0xFFFAFAFC)
+private val TossThought = Color(0xFFF1F3F5)
+private val TossDivider = Color(0xFFE2E2E2)
+private val TossMuted = Color(0xFF7B7D83)
+private val TossDark = Color(0xFF303030)
 private val SineEaseInOut = Easing { fraction ->
     ((1f - cos(PI * fraction).toFloat()) / 2f)
 }
@@ -1079,6 +2041,7 @@ private fun SessionCard(session: ChatSessionSummary) {
 private fun AgentAction.describe(): String =
     when (this) {
         is AgentAction.LaunchApp -> "Launch ${packageName.ifBlank { "target app" }}"
+        is AgentAction.OpenUri -> "Open ${packageName ?: uri}"
         is AgentAction.WaitForApp -> "Wait for ${packageName.ifBlank { "target app" }}"
         is AgentAction.WaitForNode -> "Wait for ${selector.label()}"
         is AgentAction.Tap -> "Tap ${label.ifBlank { selector.label() }}"

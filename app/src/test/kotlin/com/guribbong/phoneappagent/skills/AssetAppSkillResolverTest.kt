@@ -79,4 +79,40 @@ class AssetAppSkillResolverTest {
         assertEquals("Settings", result.single().appName)
         assertEquals(listOf("success: search worked"), result.single().learnedMemories)
     }
+
+    @Test
+    fun `play store install skill renders web learned install guidance`() {
+        val context = AppSkillContext(
+            packageName = "com.android.vending",
+            appName = "Google Play Store",
+            procedures = listOf(
+                AppSkillProcedure(
+                    name = "web_learned_install_from_play_store",
+                    goalPatterns = listOf("install", "play store"),
+                    steps = listOf(
+                        AppSkillStepHint(
+                            intent = "Type the requested app name in the Play Store search field and submit.",
+                            preferredSelectors = listOf(
+                                SkillSelectorHint(
+                                    className = "android.widget.EditText",
+                                    editable = true,
+                                    packageName = "com.android.vending",
+                                ),
+                            ),
+                            expectedObservation = "Search results are visible.",
+                        ),
+                    ),
+                    riskPoints = listOf("Installing apps changes device state and requires confirm_user before tapping Install."),
+                    queryAliases = mapOf("Claude" to "Claude by Anthropic"),
+                ),
+            ),
+        )
+
+        val rendered = context.toPlannerText()
+
+        assertTrue(rendered.contains("web_learned_install_from_play_store"))
+        assertTrue(rendered.contains("com.android.vending"))
+        assertTrue(rendered.contains("confirm_user"))
+        assertTrue(rendered.contains("Claude->Claude by Anthropic"))
+    }
 }

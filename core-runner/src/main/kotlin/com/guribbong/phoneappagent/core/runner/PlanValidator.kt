@@ -41,6 +41,15 @@ class PlanValidator {
                 }
             }
 
+            is AgentAction.OpenUri -> {
+                if (action.uri.isBlank()) {
+                    add("$prefix OpenUri uri must not be blank.")
+                }
+                if (!action.uri.contains("://")) {
+                    add("$prefix OpenUri uri must include a scheme.")
+                }
+            }
+
             is AgentAction.WaitForApp -> {
                 if (action.packageName.isBlank()) {
                     add("$prefix WaitForApp packageName must not be blank.")
@@ -65,10 +74,14 @@ class PlanValidator {
                 }
             }
 
+            is AgentAction.SubmitInput -> validateSelector(prefix, "SubmitInput", action.selector)
+            is AgentAction.ClearText -> validateSelector(prefix, "ClearText", action.selector)
+            is AgentAction.Scroll -> {
+                action.selector?.let { selector ->
+                    validateSelector(prefix, "Scroll", selector)
+                }
+            }
             is AgentAction.AssertVisible -> validateSelector(prefix, "AssertVisible", action.selector)
-            is AgentAction.SubmitInput,
-            is AgentAction.ClearText,
-            is AgentAction.Scroll,
             is AgentAction.PressGlobal,
             is AgentAction.WaitForCondition,
             is AgentAction.ConfirmUser,

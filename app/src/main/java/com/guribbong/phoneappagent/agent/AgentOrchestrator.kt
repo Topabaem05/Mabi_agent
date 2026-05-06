@@ -150,11 +150,15 @@ class AgentOrchestrator(
                 confirmGateState = "confirmed",
                 replaceFailureReason = true,
             )
+            val resumeStartIndex = (_state.value.currentStepIndex + 2).coerceAtMost(plan.steps.size)
+            if (!returnToGuardedTargetAppIfNeeded(sessionId, _state.value.currentGoal, plan, resumeStartIndex)) {
+                return@launchActiveJob
+            }
             runPlanningLoop(
                 sessionId = sessionId,
                 goal = _state.value.currentGoal,
                 initialPlan = plan,
-                startIndex = (_state.value.currentStepIndex + 2).coerceAtMost(plan.steps.size),
+                startIndex = resumeStartIndex,
             )
         }
     }
@@ -195,6 +199,11 @@ class AgentOrchestrator(
                 plannerInputSummary = "preparing runtime",
             )
             activeSessionId = sessionId
+            AccessibilityOverlayBridge.show(
+                statusLabel = "Agent starting",
+                packageName = initialSnapshot.foregroundPackage ?: initialSnapshot.lastExternalForegroundPackage,
+                stepLabel = "preparing",
+            )
             _state.value = AgentOrchestratorState(
                 phase = AgentRunPhase.PREPARING,
                 detail = "Probing device capability",
@@ -245,6 +254,11 @@ class AgentOrchestrator(
                 _state.value = _state.value.copy(
                     phase = AgentRunPhase.PLANNING,
                     detail = "Planning on device",
+                )
+                AccessibilityOverlayBridge.show(
+                    statusLabel = "Agent planning",
+                    packageName = accessibilityRepository.snapshot.value.foregroundPackage,
+                    stepLabel = "planning",
                 )
                 val planningSnapshot = accessibilityRepository.snapshot.value
                 val plannerInput = buildPlannerInput(
@@ -359,6 +373,11 @@ class AgentOrchestrator(
                         currentPlan = currentPlan,
                         currentStepIndex = -1,
                         lastObservedPackage = snapshot.foregroundPackage,
+                    )
+                    AccessibilityOverlayBridge.show(
+                        statusLabel = "Agent replanning",
+                        packageName = snapshot.foregroundPackage,
+                        stepLabel = "planning",
                     )
                     val plannerInput = buildPlannerInput(
                         goal = goal,
@@ -549,6 +568,70 @@ class AgentOrchestrator(
         return PlanLoopResult.NEEDS_REPLAN
     }
 
+    private suspend fun returnToGuardedTargetAppIfNeeded(
+        sessionId: Long,
+        goal: String,
+        plan: PlanDraft,
+        resumeStartIndex: Int,
+    ): Boolean {
+        val targetPackage = plan.guardedTargetPackage(resumeStartIndex) ?: return true
+        accessibilityRepository.refreshState()
+        val snapshot = accessibilityRepository.snapshot.value
+        val targetVisible = snapshot.visibleNodes.any { node ->
+            packageResolver.matches(targetPackage, node.packageName)
+        }
+        if (packageResolver.matches(targetPackage, snapshot.foregroundPackage) || targetVisible) {
+            return true
+        }
+
+        AccessibilityOverlayBridge.show(
+            statusLabel = "Returning to app",
+            packageName = targetPackage,
+            stepLabel = "resume_guarded_step",
+        )
+        _state.value = _state.value.copy(
+            phase = AgentRunPhase.EXECUTING,
+            detail = "Returning to $targetPackage before continuing confirmed action.",
+            lastObservedPackage = snapshot.foregroundPackage,
+        )
+
+        val launchAction = AgentAction.LaunchApp(targetPackage)
+        val launchResult = planExecutor.executeStep(launchAction)
+        sessionRepository.appendActionLog(
+            sessionId = sessionId,
+            stepIndex = resumeStartIndex,
+            actionType = "ReturnToTargetApp",
+            selectorSummary = targetPackage,
+            resultStatus = if (launchResult.success) "ok" else "failed",
+            detail = launchResult.detail,
+            observedPackage = launchResult.observedPackage,
+        )
+        if (!launchResult.success) {
+            failSession(sessionId, goal, launchResult.detail)
+            return false
+        }
+        rememberAction(launchAction)
+
+        val waitAction = AgentAction.WaitForApp(targetPackage)
+        val waitResult = planExecutor.executeStep(waitAction)
+        sessionRepository.appendActionLog(
+            sessionId = sessionId,
+            stepIndex = resumeStartIndex,
+            actionType = "WaitForTargetApp",
+            selectorSummary = targetPackage,
+            resultStatus = if (waitResult.success) "ok" else "failed",
+            detail = waitResult.detail,
+            observedPackage = waitResult.observedPackage,
+        )
+        if (!waitResult.success) {
+            failSession(sessionId, goal, waitResult.detail)
+            return false
+        }
+        rememberAction(waitAction)
+        accessibilityRepository.refreshState()
+        return true
+    }
+
     private suspend fun validatePlanOrFail(
         sessionId: Long,
         goal: String,
@@ -579,6 +662,12 @@ class AgentOrchestrator(
                 _state.value = _state.value.copy(
                     phase = AgentRunPhase.RECOVERING,
                     detail = "Recovering ${step.action.describe()}",
+                )
+                AccessibilityOverlayBridge.show(
+                    statusLabel = "Recovering",
+                    packageName = first.observedPackage ?: accessibilityRepository.snapshot.value.foregroundPackage,
+                    stepLabel = step.action.describe(),
+                    targetBounds = first.targetBounds,
                 )
                 val recovery = planExecutor.executeStep(
                     AgentAction.Scroll(direction = ScrollDirection.DOWN),
@@ -799,17 +888,44 @@ class AgentOrchestrator(
         "Previous run failed: ${reason.take(180)}. Do not repeat the same selector/package blindly; inspect visibleNodes first, include full target info, and pivot strategy if the screen differs."
 
     private fun serializeNodes(nodes: List<com.guribbong.phoneappagent.driver.accessibility.UiNodeSnapshot>): String =
-        nodes.joinToString(separator = "\n") { node ->
+        nodes.take(256).mapIndexed { index, node ->
             buildString {
-                append("text=").append(node.text ?: "")
+                append("ref=@e").append(index + 1)
+                append(" | role=").append(node.roleLabel())
+                append(" | text=").append(node.text ?: "")
                 append(" | desc=").append(node.contentDescription ?: "")
                 append(" | id=").append(node.resourceId ?: "")
                 append(" | class=").append(node.className ?: "")
                 append(" | package=").append(node.packageName ?: "")
                 append(" | editable=").append(node.editable)
                 append(" | clickable=").append(node.clickable)
+                if (node.indexPath.isNotEmpty()) {
+                    append(" | idx=").append(node.indexPath.joinToString("."))
+                }
+                node.bounds?.let { bounds ->
+                    append(" | bounds=")
+                        .append(bounds.left)
+                        .append(',')
+                        .append(bounds.top)
+                        .append(',')
+                        .append(bounds.right)
+                        .append(',')
+                        .append(bounds.bottom)
+                }
             }
+        }.joinToString(separator = "\n")
+
+    private fun com.guribbong.phoneappagent.driver.accessibility.UiNodeSnapshot.roleLabel(): String {
+        val classTail = className?.substringAfterLast('.').orEmpty().lowercase()
+        return when {
+            editable -> "text_field"
+            clickable && "button" in classTail -> "button"
+            clickable -> "control"
+            "recyclerview" in classTail || "listview" in classTail || "scrollview" in classTail -> "list"
+            !text.isNullOrBlank() || !contentDescription.isNullOrBlank() -> "text"
+            else -> "node"
         }
+    }
 
     private fun screenSummary(snapshot: com.guribbong.phoneappagent.accessibility.AccessibilitySnapshot): String =
         buildString {
@@ -844,6 +960,7 @@ class AgentOrchestrator(
 private fun AgentAction.supportsRecovery(): Boolean =
     when (this) {
         is AgentAction.Tap,
+        is AgentAction.OpenUri,
         is AgentAction.InputText,
         is AgentAction.SubmitInput,
         is AgentAction.ClearText,
@@ -866,9 +983,33 @@ private fun AgentAction.selectorSummary(): String? =
         else -> null
     }
 
+private fun PlanDraft.guardedTargetPackage(startIndex: Int): String? =
+    targetPackageCandidates.firstOrNull { it.isNotBlank() }
+        ?: steps.drop(startIndex).firstNotNullOfOrNull { step -> step.action.targetPackage() }
+
+private fun AgentAction.targetPackage(): String? =
+    when (this) {
+        is AgentAction.LaunchApp -> packageName
+        is AgentAction.OpenUri -> packageName
+        is AgentAction.WaitForApp -> packageName
+        is AgentAction.WaitForNode -> selector.packageName
+        is AgentAction.Tap -> selector.packageName
+        is AgentAction.InputText -> selector.packageName
+        is AgentAction.SubmitInput -> selector.packageName
+        is AgentAction.ClearText -> selector.packageName
+        is AgentAction.Scroll -> selector?.packageName
+        is AgentAction.AssertVisible -> selector.packageName
+        is AgentAction.WaitForCondition,
+        is AgentAction.ConfirmUser,
+        is AgentAction.PressGlobal,
+        AgentAction.Stop,
+        -> null
+    }
+
 private fun AgentAction.describe(): String =
     when (this) {
         is AgentAction.LaunchApp -> "Launch $packageName"
+        is AgentAction.OpenUri -> "Open ${packageName ?: uri}"
         is AgentAction.WaitForApp -> "Wait for $packageName"
         is AgentAction.WaitForNode -> "Wait for ${selector.label()}"
         is AgentAction.Tap -> "Tap ${label.ifBlank { selector.label() }}"

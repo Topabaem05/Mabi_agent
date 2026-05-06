@@ -19,6 +19,9 @@ class PolicyGateTest {
             "앱을 설치해줘",
             "위치 권한 허용해줘",
             "문서를 업로드해줘",
+            "KTX 예매를 진행해줘",
+            "저녁 열차를 예약해줘",
+            "상품을 주문해줘",
         )
 
         goals.forEach { goal ->
@@ -48,6 +51,12 @@ class PolicyGateTest {
             "share this document",
             "install the app",
             "grant permission for location",
+            "take a photo with the camera",
+            "press the shutter button",
+            "book the evening train",
+            "reserve this ticket",
+            "continue to checkout",
+            "order this item",
         )
 
         goals.forEach { goal ->
@@ -65,6 +74,18 @@ class PolicyGateTest {
 
         assertFalse(decision.allowed)
         assertTrue(decision.needsConfirmation)
+    }
+
+    @Test
+    fun `opening camera without capture is low risk`() {
+        val decision = gate.evaluate(
+            goal = "Open the Camera app only.",
+            actions = emptyList(),
+            runtimeRiskLevel = RiskLevel.LOW,
+        )
+
+        assertTrue(decision.allowed)
+        assertFalse(decision.needsConfirmation)
     }
 
     private fun assertRequiresConfirmation(goal: String) {

@@ -1,0 +1,70 @@
+{
+  "appName": "Google Play Store",
+  "packageNames": ["com.android.vending"],
+  "procedures": [
+    {
+      "name": "web_learned_install_from_play_store",
+      "goalPatterns": ["install", "download", "play store", "google play", "설치", "다운로드", "플레이 스토어"],
+      "queryAliases": {
+        "Claude": "Claude by Anthropic"
+      },
+      "riskPoints": [
+        "Source: Google Play Help says to open Google Play, search or browse, select an item, then select Install or price.",
+        "Installing apps changes device state and requires confirm_user before tapping Install.",
+        "Paid apps, subscriptions, payment, login, permission, and account prompts require a separate confirm_user."
+      ],
+      "steps": [
+        {
+          "intent": "Open Google Play Store and reach the Search tab.",
+          "expectedObservation": "The Play Store search field or search tab is visible.",
+          "fallbackStrategy": "If the search field is not visible on launch, tap the bottom Search tab labelled 검색 or Search.",
+          "preferredSelectors": [
+            {
+              "text": "검색",
+              "packageName": "com.android.vending"
+            },
+            {
+              "text": "Search",
+              "packageName": "com.android.vending"
+            },
+            {
+              "contentDescription": "Google Play 검색",
+              "packageName": "com.android.vending"
+            }
+          ]
+        },
+        {
+          "intent": "Type the requested app name in the Play Store search field and submit.",
+          "expectedObservation": "Search results for the requested app are visible.",
+          "fallbackStrategy": "Use the editable field with placeholder 앱 및 게임 검색 or Search apps & games.",
+          "preferredSelectors": [
+            {
+              "className": "android.widget.EditText",
+              "editable": true,
+              "packageName": "com.android.vending"
+            },
+            {
+              "text": "앱 및 게임 검색",
+              "packageName": "com.android.vending"
+            }
+          ]
+        },
+        {
+          "intent": "Choose the requested app result and stop before installing.",
+          "expectedObservation": "The target app detail/result card and an Install button are visible.",
+          "fallbackStrategy": "If the result opens directly, look for 설치 or Install on the detail page.",
+          "preferredSelectors": [
+            {
+              "text": "설치",
+              "packageName": "com.android.vending"
+            },
+            {
+              "text": "Install",
+              "packageName": "com.android.vending"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -99,6 +99,29 @@ data class AgentActionLog(
     val observedPackage: String?,
 )
 
+data class ChatTranscript(
+    val sessionId: Long,
+    val title: String,
+    val appName: String,
+    val status: String,
+    val updatedLabel: String,
+    val messages: List<ChatTranscriptMessage>,
+)
+
+data class ChatTranscriptMessage(
+    val role: ChatTranscriptRole,
+    val title: String,
+    val body: String,
+    val meta: String? = null,
+)
+
+enum class ChatTranscriptRole {
+    USER,
+    AGENT,
+    THOUGHT,
+    STATUS,
+}
+
 data class AgentSessionState(
     val sessionId: Long,
     val status: String,

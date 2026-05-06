@@ -140,6 +140,7 @@ class AgentAccessibilityService : AccessibilityService(), AccessibilityActionPer
             is AgentAction.WaitForApp,
             is AgentAction.WaitForCondition,
             is AgentAction.LaunchApp,
+            is AgentAction.OpenUri,
             is AgentAction.ConfirmUser,
             AgentAction.Stop,
             -> ActionExecutionResult(success = true, detail = "No-op service action.")

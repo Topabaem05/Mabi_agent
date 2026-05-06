@@ -75,6 +75,48 @@ class InstalledAppCatalog(
             ),
             preferredLabelTokens = listOf("files", "파일", "내 파일"),
         ),
+        AliasSpec(
+            key = "play store",
+            label = "Google Play Store",
+            preferredPackages = listOf("com.android.vending"),
+            preferredLabelTokens = listOf("play store", "google play", "플레이 스토어", "스토어"),
+        ),
+        AliasSpec(
+            key = "google play",
+            label = "Google Play Store",
+            preferredPackages = listOf("com.android.vending"),
+            preferredLabelTokens = listOf("play store", "google play", "플레이 스토어", "스토어"),
+        ),
+        AliasSpec(
+            key = "install",
+            label = "Google Play Store",
+            preferredPackages = listOf("com.android.vending"),
+            preferredLabelTokens = listOf("play store", "google play", "플레이 스토어", "스토어"),
+        ),
+        AliasSpec(
+            key = "설치",
+            label = "Google Play Store",
+            preferredPackages = listOf("com.android.vending"),
+            preferredLabelTokens = listOf("play store", "google play", "플레이 스토어", "스토어"),
+        ),
+        AliasSpec(
+            key = "코레일톡",
+            label = "KorailTalk",
+            preferredPackages = listOf("com.korail.talk"),
+            preferredLabelTokens = listOf("코레일톡", "korail", "ktx", "letskorail"),
+        ),
+        AliasSpec(
+            key = "korail",
+            label = "KorailTalk",
+            preferredPackages = listOf("com.korail.talk"),
+            preferredLabelTokens = listOf("코레일톡", "korail", "ktx", "letskorail"),
+        ),
+        AliasSpec(
+            key = "ktx",
+            label = "KorailTalk",
+            preferredPackages = listOf("com.korail.talk"),
+            preferredLabelTokens = listOf("코레일톡", "korail", "ktx", "letskorail"),
+        ),
     )
     private val staticAliases: Map<String, AppCandidate> =
         buildMap {

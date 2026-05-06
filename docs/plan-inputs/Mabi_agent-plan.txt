@@ -1,0 +1,252 @@
+Mobile Agent Plan – Remote OpenRouter LLM
+This plan outlines how to enhance the Mabi Agent to operate effectively in a mobile environment while
+using a remote LLM via OpenRouter API instead of a local on‑device model. The goal is to keep the
+agent lightweight on the device, delegate high‑level reasoning to a cloud model, and equip it with
+additional skills and integrations so it can understand and control mobile apps more reliably.
+
+
+1. Motivation
+Current mobile agents struggle with reliable interaction because the UI is dynamic and the latency of
+existing tooling is high. Conventional ADB‑based pipelines can add hundreds of milliseconds per action
+and require multiple process hops. In comparison, an in‑process accessibility service like NeuralBridge
+provides sub‑10 ms taps and eliminates five‑hop protocol chains by exposing an HTTP endpoint inside
+the Android app 1 . The Agent Device project further shows that a CLI/daemon with primitives such as
+open , snapshot , click , fill , scroll , type , find and replay simplifies mobile
+automation for agents    2   . The Android Action Kernel extracts a structured UI via Accessibility APIs and
+uses that as context for an LLM, demonstrating that structured UI trees are more token‑efficient than
+screenshots.
+
+
+These projects highlight two key lessons:
+
+
+     1. Use structured accessibility data rather than vision or screenshot to reduce latency and context
+        size.
+     2. Expose simple, semantic commands so an agent can reason at a higher level.
+
+This plan adopts those lessons while retaining the remote OpenRouter LLM as the planner. It proposes to
+add new skills and integrate open‑source tools to give the agent better awareness of the mobile
+environment.
+
+
+2. Proposed Additional Skills and Functions
+The table below lists new skills that should be added to the agent’s repertoire. Each skill encapsulates a
+specific capability with a clear function signature so the planner (via OpenRouter) can call it
+deterministically.
+
+
+  Skill name            Purpose           Input                    Output               Function description
+
+                                                                                        Uses the device’s
+                        Capture a
+                                                                   JSON                  AccessibilityService to obtain
+                        structured         appPackageName
+                                                                   representation       a tree of interactive and
+                        accessibility     (string), optional
+  snapshotScreen                                                   of UI elements       non‑interactive nodes. Similar to
+                        tree of the        interactiveOnly
+                                                                   (IDs, roles, text,    agent-device snapshot 3 . This
+                        current           (bool)
+                                                                   coordinates)         provides context for the LLM and
+                        screen
+                                                                                        reduces token usage.
+
+
+
+
+                                                       1
+ Skill name         Purpose          Input                   Output               Function description
+
+                    Locate an
+                                                                                  Parses the latest snapshot to find an
+                    element by
+                                      criteria (object                            element matching the criteria. Similar
+                    text, content                            a reference ID to
+ findElement                         with fields: text ,                          to find in agent‑device 3 . The
+                    description                              the element
+                                      role , nearText )                           reference can be used by other skills
+                    or semantic
+                                                                                  (e.g., clickElement).
+                    role
+
+                                                                                  Uses dispatchGesture via
+                    Tap an                                                        AccessibilityService to perform a click
+                                      elementRef
+ clickElement       element on                               success/failure      at the element’s coordinates. Latency
+                                     (reference ID)
+                    screen                                                        is ~2 ms when executed in‑process
+                                                                                    4 .
+
+
+                                                                                  Clears the field and inserts text. It
+                    Clear and                                                     should ensure there is a cursor, then
+                    type text         elementRef ,                                call dispatchGesture to focus and
+ fillField                                                   success/failure
+                    into an input     value (string)                              AccessibilityService#setText .
+                    field                                                         Inspired by fill in agent‑device
+                                                                                   3   .
+
+                    Scroll within     elementRef ,                                Executes a swipe gesture using
+ scrollView         a scrollable      direction (enum:       success/failure      AccessibilityService. Returns updated
+                    container        up/down/left/right)                          reference to the container.
+
+                    Extract                                                       Reads the node’s text attribute or
+                    visible text                                                  performs OCR when necessary. Helps
+ getText                              elementRef             string
+                    from an                                                       the agent verify state or capture
+                    element                                                       messages.
+
+                    Capture and                                                   Uses the device’s screenshot API;
+ takeScreenshot     save a            filename (string)      path to saved file   provides visual logs for debugging and
+                    screenshot                                                    for the user.
+
+                    Execute a                                                     Reads a .ad script (similar to agent‑
+                    recorded          scriptPath                                  device’s replay   3   ) and executes
+ replayScript                                                success/failure
+                    sequence of      (string)                                     actions deterministically. Useful for
+                    actions                                                       repeating flows without re‑planning.
+
+                    Display a                                                     Shows a modal asking the user for
+                    confirmation                                                  approval before proceeding. This is
+                                                              userResponse
+ confirmUser        dialog for        message (string)                            inserted automatically by the policy
+                                                             (bool)
+                    high‑risk                                                     gate when the plan involves sensitive
+                    actions                                                       operations.
+
+
+Skill Implementation Notes
+
+     • AccessibilityService integration: All interaction skills rely on the Android
+        AccessibilityService with dispatchGesture() , performAction() and setText()
+      so they can operate without ADB. This follows the approach described in NeuralBridge where the
+      gesture is executed in‑process 4 .
+
+
+
+
+                                                  2
+      • Structured snapshots: The snapshotScreen skill should return a compact JSON similar to
+       agent‑device’s snapshot. Each node should include an auto‑generated reference (e.g., @e1 ), role
+       (button, text, list), and text/content. Compact snapshots enable the remote LLM to plan effectively
+       without exceeding token limits 3 .
+      • Element references: Skills take an elementRef so that the agent can refer to UI elements
+       deterministically across multiple actions. This is inspired by the ref‑based model in agent‑device
+        3 . References should remain valid until the next snapshot.
+
+      • Replay scripts: A simple domain‑specific language (DSL) can encode sequences of skill calls with
+        parameters. The agent can record successful runs and store them for reuse.
+
+
+3. Integrating Open‑Source Projects
+To accelerate development and reliability, the following open‑source projects should be used or studied:
+
+
+     1. Agent‑Device CLI — provides a model for structured mobile automation with commands like
+         open , snapshot , click , fill , scroll , find and replay . These commands use
+       accessibility trees and are token‑efficient   2   . The agent should mirror this interface in its skill
+       definitions so that remote planning becomes straightforward. agent-device also emphasises
+       deterministic replay and cross‑platform uniformity        5   .
+
+
+     2. NeuralBridge — demonstrates that embedding an HTTP server inside the Android companion
+        app can eliminate ADB latency and deliver sub‑10 ms taps 4 . Mabi Agent should implement a
+       lightweight HTTP or WebSocket endpoint for the remote OpenRouter agent to invoke skills over
+       the network.
+
+
+     3. Android Action Kernel (also known as Android Use) — shows how to extract structured UI state
+        via the accessibility API and feed it to an LLM for decision‑making. Although it executes actions via
+        ADB, the snapshot extraction logic and LLM integration can be reused.
+
+
+By combining these projects’ strengths (structured snapshots, fast in‑process gestures, replay scripts,
+remote invocation), the agent can achieve reliable and efficient mobile control while still using a remote
+LLM.
+
+
+4. Overall Workflow Using Remote OpenRouter API
+The agent will operate as follows:
+
+
+     1. Goal intake: The user states their goal in the chat interface of the Mabi agent app.
+     2. Skill context generation: The app calls snapshotScreen and summarises the UI to the remote
+        LLM. The summary plus the goal forms the prompt to the OpenRouter API.
+     3. Planning via OpenRouter: The remote LLM returns a high‑level plan (sequence of skill calls)
+        based on available skills and current UI context.
+     4. Policy gate: Before execution, the agent enforces policy rules (e.g., for payments or data deletion)
+        and inserts confirmUser calls if needed.
+     5. Execution loop: The agent executes the plan step by step via the skills. After each action, it
+        refreshes the snapshot and updates references. On failure, it requests a replanning from the
+        remote LLM with the new context.
+     6. Replay recording: Successful sequences can be stored as replay scripts for future tasks.
+     7. Completion: The agent returns a summary of what was achieved and logs the interaction.
+
+
+
+
+                                                         3
+Process Flow Diagram
+
+
+     flowchart TD
+           A[User enters goal] --> B[Call snapshotScreen]
+           B --> C[Send goal + snapshot to OpenRouter API]
+           C --> D[Receive plan (list of skills)]
+           D --> E{Policy gate}
+           E -->|Needs confirmation| F[insert confirmUser]
+           E -->|No confirmation| G[Proceed]
+           F --> G
+           G --> H[Execute next skill]
+           H --> I{Success?}
+           I -->|Yes and last| J[Return success summary]
+           I -->|Yes| H
+           I -->|No| K[Call snapshotScreen again]
+           K --> L[Send updated context to OpenRouter for replanning]
+           L --> D
+           J --> M[Optionally save replay script]
+
+
+The diagram emphasises how the agent uses snapshots to inform the remote LLM, inserts user
+confirmations when necessary, and re‑plans if execution fails.
+
+
+5. Potential Pitfalls and Mitigations
+          • Latency due to remote LLM: While OpenRouter eliminates the need for on‑device models,
+            network latency will still add overhead. Minimising context size via snapshots and using
+            deterministic replay for common tasks can mitigate this.
+          • Accessibility limitations: Some apps may hide content from the accessibility layer. For such
+            cases, the agent should fall back to OCR or vision models (e.g., integrate Tesseract or Google ML
+            Kit) to read text, though this is more expensive.
+          • Security and privacy: Exposing an HTTP endpoint inside the agent app must be secured (e.g.,
+            local only or authenticated) to prevent misuse. High‑risk actions require explicit user confirmation
+            and should be audited.
+          • Context drift: UI may change between plan generation and execution. Frequent snapshots and
+            re‑planning loops reduce this risk.
+
+
+6. Summary
+By incorporating structured snapshots, deterministic references, and skill‑based functions inspired by
+Agent Device and NeuralBridge, and by keeping planning on the remote OpenRouter API, the Mabi
+Agent can become a robust on‑device assistant. New skills like snapshotScreen , findElement ,
+ clickElement , fillField , scrollView , getText , takeScreenshot , replayScript and
+ confirmUser make the agent’s capabilities explicit and deterministic. Leveraging open‑source tools
+ensures the agent remains efficient and up‑to‑date with community best practices.
+
+
+
+ 1    4    I Built a 100x Faster Android Automation Tool Because AI Agents Deserve Better | HackerNoon
+https://hackernoon.com/i‑built‑a‑100x‑faster‑android‑automation‑tool‑because‑ai‑agents‑deserve‑better
+
+
+
+
+                                                           4
+ 2   3   5   Agent Device: iOS & Android Automation for AI Agents
+https://www.callstack.com/blog/agent‑device‑ai‑native‑mobile‑automation‑for‑ios‑android
+
+
+
+
+                                                           5
+

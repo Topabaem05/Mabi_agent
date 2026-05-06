@@ -22,6 +22,7 @@ import com.guribbong.phoneappagent.data.history.AgentSessionState
 import com.guribbong.phoneappagent.data.history.AgentAppMemory
 import com.guribbong.phoneappagent.data.history.AgentSkillMemory
 import com.guribbong.phoneappagent.data.history.ChatSessionSummary
+import com.guribbong.phoneappagent.data.history.ChatTranscript
 import com.guribbong.phoneappagent.data.history.RecoverableSession
 import com.guribbong.phoneappagent.data.history.SessionRepository
 import com.guribbong.phoneappagent.driver.accessibility.AccessibilityDriver
@@ -203,6 +204,84 @@ class AgentOrchestratorConfirmFlowTest {
             ),
             nonPlanLogs.last(),
         )
+    }
+
+    @Test
+    fun confirmFromAgentAppReturnsToTargetBeforeGuardedStep() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val sessionRepository = FakeSessionRepository()
+        val accessibilityRepository = FakeAccessibilityStatusRepository(
+            foregroundPackage = context.packageName,
+            lastExternalForegroundPackage = "com.samsung.android.messaging",
+        )
+        val recordedActions = mutableListOf<AgentAction>()
+        val guardedSelector = NodeSelector(
+            resourceId = "com.samsung.android.messaging:id/send_button",
+            packageName = "com.samsung.android.messaging",
+        )
+        val runtimePlan = PlanDraft(
+            summary = "Resume target app after in-app confirmation",
+            steps = listOf(
+                ExecutionStep(
+                    action = AgentAction.ConfirmUser("User confirmation required before sending."),
+                    expectedObservation = "Wait at confirm_user",
+                ),
+                ExecutionStep(
+                    action = AgentAction.WaitForNode(guardedSelector),
+                    expectedObservation = "Send button is visible",
+                ),
+                ExecutionStep(
+                    action = AgentAction.Tap(
+                        selector = guardedSelector,
+                        label = "Send",
+                    ),
+                    expectedObservation = "Send button tapped after confirmation",
+                ),
+                ExecutionStep(
+                    action = AgentAction.Stop,
+                    expectedObservation = "The guarded flow is complete",
+                ),
+            ),
+            riskLevel = com.guribbong.phoneappagent.core.policy.RiskLevel.CRITICAL,
+            needsConfirmation = true,
+            targetPackageCandidates = listOf("com.samsung.android.messaging"),
+            rawModelOutput = "{}",
+            rawPlanJson = """{"steps":["confirm","wait","tap","stop"]}""",
+        )
+        val orchestrator = AgentOrchestrator(
+            context = context,
+            sessionRepository = sessionRepository,
+            accessibilityRepository = accessibilityRepository,
+            runtime = FakeRuntime(runtimePlan),
+            planExecutor = PlanExecutor(RecordingAccessibilityDriver(recordedActions)),
+            policyGate = PolicyGate(),
+            appCatalog = InstalledAppCatalog(context),
+            packageResolver = CanonicalPackageResolver(),
+            powerController = AgentPowerController(context),
+            skillResolver = FakeSkillResolver(),
+        )
+
+        orchestrator.startGoal("send hello to 12345")
+
+        waitForPhase(orchestrator, AgentRunPhase.WAITING_FOR_CONFIRM)
+        orchestrator.confirmAndContinue()
+
+        val terminalState = waitForTerminalState(orchestrator)
+        assertEquals(sessionRepository.latestFailureReason, AgentRunPhase.COMPLETED, terminalState.phase)
+        assertEquals(
+            listOf(
+                AgentAction.LaunchApp("com.samsung.android.messaging"),
+                AgentAction.WaitForApp("com.samsung.android.messaging"),
+                AgentAction.WaitForNode(guardedSelector),
+                AgentAction.Tap(
+                    selector = guardedSelector,
+                    label = "Send",
+                ),
+            ),
+            recordedActions,
+        )
+        assertTrue(sessionRepository.actionLogs.any { it.actionType == "ReturnToTargetApp" && it.resultStatus == "ok" })
+        assertTrue(sessionRepository.actionLogs.any { it.actionType == "WaitForTargetApp" && it.resultStatus == "ok" })
     }
 
     @Test
@@ -628,13 +707,16 @@ private class FakeSkillResolver(
             }
 }
 
-private class FakeAccessibilityStatusRepository : AccessibilityStatusRepository {
+private class FakeAccessibilityStatusRepository(
+    foregroundPackage: String = "com.samsung.android.messaging",
+    lastExternalForegroundPackage: String = foregroundPackage,
+) : AccessibilityStatusRepository {
     private val snapshotFlow = MutableStateFlow(
         AccessibilitySnapshot(
             enabled = true,
             serviceHealth = AccessibilityServiceHealth.CONNECTED,
-            foregroundPackage = "com.samsung.android.messaging",
-            lastExternalForegroundPackage = "com.samsung.android.messaging",
+            foregroundPackage = foregroundPackage,
+            lastExternalForegroundPackage = lastExternalForegroundPackage,
             topNodeLabel = "Messages",
             nodeCount = 3,
             lastEvent = "test",
@@ -683,6 +765,8 @@ private class FakeSessionRepository : SessionRepository {
     override fun observeSessions(): Flow<List<ChatSessionSummary>> = flowOf(emptyList())
 
     override fun observeLatestAgentState(): Flow<AgentSessionState?> = latestAgentState
+
+    override suspend fun transcriptForSession(sessionId: Long): ChatTranscript? = null
 
     override suspend fun createSession(
         title: String,

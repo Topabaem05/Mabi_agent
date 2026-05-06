@@ -37,6 +37,24 @@ class PlanValidatorTest {
     }
 
     @Test
+    fun rejectsEmptySubmitInputSelector() {
+        assertInvalid(AgentAction.SubmitInput(NodeSelector()), "SubmitInput selector")
+    }
+
+    @Test
+    fun rejectsEmptyClearTextSelector() {
+        assertInvalid(AgentAction.ClearText(NodeSelector()), "ClearText selector")
+    }
+
+    @Test
+    fun rejectsEmptyTargetedScrollSelector() {
+        assertInvalid(
+            AgentAction.Scroll(selector = NodeSelector()),
+            "Scroll selector",
+        )
+    }
+
+    @Test
     fun rejectsEmptyAssertVisibleSelector() {
         assertInvalid(AgentAction.AssertVisible(NodeSelector()), "AssertVisible selector")
     }
@@ -103,6 +121,13 @@ class PlanValidatorTest {
     @Test
     fun acceptsStopOnlySafeCheckpoint() {
         val result = validator.validate(plan(step(AgentAction.Stop)))
+
+        assertTrue(result.errors.joinToString(), result.isValid)
+    }
+
+    @Test
+    fun acceptsUntargetedScroll() {
+        val result = validator.validate(plan(step(AgentAction.Scroll())))
 
         assertTrue(result.errors.joinToString(), result.isValid)
     }

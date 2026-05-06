@@ -13,6 +13,7 @@ import java.util.Locale
 interface SessionRepository {
     fun observeSessions(): Flow<List<ChatSessionSummary>>
     fun observeLatestAgentState(): Flow<AgentSessionState?>
+    suspend fun transcriptForSession(sessionId: Long): ChatTranscript?
 
     suspend fun createSession(
         title: String,
@@ -115,6 +116,12 @@ private class DefaultSessionRepository(
         dao.observeLatest().map { entity ->
             entity?.toAgentSessionState()
         }
+
+    override suspend fun transcriptForSession(sessionId: Long): ChatTranscript? {
+        val session = dao.getById(sessionId) ?: return null
+        val actionLogs = dao.getActionLogs(sessionId)
+        return session.toChatTranscript(actionLogs)
+    }
 
     override suspend fun createSession(
         title: String,
@@ -319,6 +326,131 @@ private class DefaultSessionRepository(
             planJson = validatedPlanJson,
             goal = userGoal,
         )
+
+    private fun ChatSessionEntity.toChatTranscript(
+        actionLogs: List<AgentActionLogEntity>,
+    ): ChatTranscript {
+        val messages = buildList {
+            add(
+                ChatTranscriptMessage(
+                    role = ChatTranscriptRole.USER,
+                    title = "User",
+                    body = userGoal.ifBlank { title },
+                    meta = updatedLabel(),
+                ),
+            )
+            plannerInputSummary
+                .takeIf { it.isNotBlank() && it != "seed session" }
+                ?.let { summary ->
+                    add(
+                        ChatTranscriptMessage(
+                            role = ChatTranscriptRole.AGENT,
+                            title = "Planner context",
+                            body = summary.compactForTranscript(360),
+                            meta = appName,
+                        ),
+                    )
+                }
+            if (validatedPlanJson.isNotBlank()) {
+                add(
+                    ChatTranscriptMessage(
+                        role = ChatTranscriptRole.AGENT,
+                        title = "Plan",
+                        body = validatedPlanJson.compactPlanForTranscript(),
+                        meta = "step ${currentStepIndex.coerceAtLeast(0)}",
+                    ),
+                )
+            }
+            actionLogs.forEach { log ->
+                add(log.toTranscriptMessage())
+            }
+            if (confirmGateState != "not_required") {
+                add(
+                    ChatTranscriptMessage(
+                        role = ChatTranscriptRole.STATUS,
+                        title = "Confirmation",
+                        body = when (confirmGateState) {
+                            "awaiting_confirmation" -> "Waiting for the user to proceed or stop."
+                            "confirmed" -> "The user confirmed continuation."
+                            else -> confirmGateState.replace('_', ' ')
+                        },
+                        meta = status,
+                    ),
+                )
+            }
+            failureReason?.takeIf { it.isNotBlank() }?.let { reason ->
+                add(
+                    ChatTranscriptMessage(
+                        role = ChatTranscriptRole.STATUS,
+                        title = "Result",
+                        body = reason.compactForTranscript(420),
+                        meta = status,
+                    ),
+                )
+            } ?: add(
+                ChatTranscriptMessage(
+                    role = ChatTranscriptRole.STATUS,
+                    title = "Session",
+                    body = status.replaceFirstChar(Char::titlecase),
+                    meta = updatedLabel(),
+                ),
+            )
+        }
+        return ChatTranscript(
+            sessionId = id,
+            title = title,
+            appName = appName,
+            status = status,
+            updatedLabel = updatedLabel(),
+            messages = messages,
+        )
+    }
+
+    private fun AgentActionLogEntity.toTranscriptMessage(): ChatTranscriptMessage {
+        val actionLabel = actionType.replace('_', ' ').replaceFirstChar(Char::titlecase)
+        val target = selectorSummary?.takeIf { it.isNotBlank() }?.compactForTranscript(120)
+        val packageMeta = observedPackage?.takeIf { it.isNotBlank() }
+        val body = buildString {
+            append(detail.ifBlank { resultStatus }.compactForTranscript(420))
+            if (!target.isNullOrBlank()) {
+                append("\nTarget: ")
+                append(target)
+            }
+        }
+        return ChatTranscriptMessage(
+            role = if (resultStatus.equals("success", ignoreCase = true)) {
+                ChatTranscriptRole.THOUGHT
+            } else {
+                ChatTranscriptRole.STATUS
+            },
+            title = "Step ${stepIndex + 1} · $actionLabel",
+            body = body,
+            meta = listOf(resultStatus, packageMeta)
+                .filterNotNull()
+                .filter { it.isNotBlank() }
+                .joinToString(" · ")
+                .ifBlank { null },
+        )
+    }
+
+    private fun ChatSessionEntity.updatedLabel(): String =
+        formatter.format(Date(updatedAtEpochMs))
+
+    private fun String.compactPlanForTranscript(): String {
+        val normalized = compactForTranscript(520)
+        return if (normalized.startsWith("{") || normalized.startsWith("[")) {
+            "Validated deterministic action plan is stored for this session.\n$normalized"
+        } else {
+            normalized
+        }
+    }
+
+    private fun String.compactForTranscript(limit: Int): String {
+        val normalized = trim()
+            .replace(Regex("\\s+"), " ")
+        if (normalized.length <= limit) return normalized
+        return normalized.take((limit - 1).coerceAtLeast(0)).trimEnd() + "…"
+    }
 }
 
 private fun provideDatabase(context: Context): AppDatabase =

@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.util.Log
 import com.guribbong.phoneappagent.accessibility.AccessibilityBridge
 import com.guribbong.phoneappagent.accessibility.AccessibilityCommandBridge
@@ -73,6 +74,7 @@ class AndroidAccessibilityDriver(
         Log.d(EXECUTOR_TAG, "execute action=${action::class.simpleName} payload=$action")
         return when (action) {
             is AgentAction.LaunchApp -> launchApp(action.packageName)
+            is AgentAction.OpenUri -> openUri(action.uri, action.packageName)
             is AgentAction.WaitForApp -> waitForApp(action.packageName, action.timeoutMs)
             is AgentAction.WaitForNode -> waitForNode(action.selector, action.timeoutMs)
             is AgentAction.WaitForCondition,
@@ -117,6 +119,46 @@ class AndroidAccessibilityDriver(
                 detail = "Fallback launch intent sent.",
                 observedPackage = packageName,
             )
+        }
+    }
+
+    private fun openUri(
+        uri: String,
+        packageName: String?,
+    ): ActionExecutionResult {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uri)).apply {
+            packageName?.takeIf { it.isNotBlank() }?.let(::setPackage)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return try {
+            appContext.startActivity(intent)
+            packageName?.let {
+                lastLaunchPackage = it
+                lastLaunchAtMs = System.currentTimeMillis()
+            }
+            ActionExecutionResult(
+                success = true,
+                detail = "URI intent sent.",
+                observedPackage = packageName,
+            )
+        } catch (_: ActivityNotFoundException) {
+            val fallbackIntent = Intent(Intent.ACTION_VIEW, Uri.parse(uri)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            try {
+                appContext.startActivity(fallbackIntent)
+                ActionExecutionResult(
+                    success = true,
+                    detail = "Fallback URI intent sent.",
+                    observedPackage = packageName,
+                )
+            } catch (_: ActivityNotFoundException) {
+                ActionExecutionResult(
+                    success = false,
+                    detail = "No activity can open $uri",
+                    observedPackage = packageName,
+                )
+            }
         }
     }
 
