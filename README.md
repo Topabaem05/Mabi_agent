@@ -44,3 +44,9 @@ bash scripts/check_openrouter_only_runtime.sh
 ```
 
 Emulator QA is required for meaningful app milestones. Physical disconnected-device QA is required before claiming standalone ADB-free runtime completion.
+
+---
+
+## Related Project
+
+[OpenLife Market](https://topabaem05.github.io/openlife-market/) - Autonomous AI agents that must sell their own research to survive. Live experiment based on arXiv:2606.31046.
